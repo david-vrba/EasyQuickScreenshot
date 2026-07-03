@@ -1,0 +1,20 @@
+# EasyQuickScreenshot config
+# Copy this file to config.toml next to eqs.exe (the app also auto-creates one on first run).
+#
+# Hotkey format: modifiers + key, e.g. "ctrl+alt+q", "shift+f9", "ctrl+shift+printscreen"
+# Modifiers: ctrl, alt, shift, win — Keys: a-z, 0-9, f1-f24, printscreen, space
+
+# Quick shot: overwrites the same temp file every time (zero folder bloat)
+quick_hotkey = "ctrl+alt+q"
+
+# Easy save: writes a timestamped file into <shots_dir>/saved/
+save_hotkey = "ctrl+alt+e"
+
+# Where screenshots go. Relative paths resolve against this config file's folder.
+shots_dir = "shots"
+
+# Filename of the quick-shot temp file (lives directly in shots_dir)
+temp_file = "temp.png"
+
+# Also copy every capture to the clipboard so you can paste it immediately
+copy_to_clipboard = true

@@ -1,0 +1,19 @@
+# Build output
+/target
+*.exe
+*.pdb
+
+# Screenshots must NEVER be committed — this is the whole point.
+/shots
+*.png
+*.jpg
+*.jpeg
+*.bmp
+!assets/**
+
+# Local user config (commit config.example.toml instead)
+/config.toml
+
+# Misc
+*.log
+Cargo.lock.orig
