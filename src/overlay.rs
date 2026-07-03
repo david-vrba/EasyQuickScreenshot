@@ -19,11 +19,12 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW,
-    RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow, TranslateMessage, CREATESTRUCTW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_CROSS, MSG, SW_SHOW, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
+    LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow,
+    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_CROSS,
+    MSG, SW_SHOW, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
@@ -70,6 +71,10 @@ pub fn select_region(shot: &Screenshot, style: CrosshairStyle) -> Option<(i32, i
         let old_bright = SelectObject(bright_dc, bright_bmp);
         let old_back = SelectObject(back_dc, back_bmp);
 
+        // Seed with the live cursor position so the guides show before the first mouse move.
+        let mut cursor = windows::Win32::Foundation::POINT::default();
+        let _ = GetCursorPos(&mut cursor);
+
         let state = Box::into_raw(Box::new(Overlay {
             back_dc,
             bright_dc,
@@ -78,7 +83,7 @@ pub fn select_region(shot: &Screenshot, style: CrosshairStyle) -> Option<(i32, i
             style,
             dragging: false,
             start: (0, 0),
-            cur: (-1, -1),
+            cur: (cursor.x - shot.origin_x, cursor.y - shot.origin_y),
             result: None,
             done: false,
         }));
@@ -109,6 +114,11 @@ pub fn select_region(shot: &Screenshot, style: CrosshairStyle) -> Option<(i32, i
                         break;
                     }
                     if GetMessageW(&mut msg, HWND::default(), 0, 0).0 <= 0 {
+                        // Don't swallow an app-wide quit inside this nested loop —
+                        // re-post it so the main message loop also exits.
+                        if msg.message == WM_QUIT {
+                            PostQuitMessage(msg.wParam.0 as i32);
+                        }
                         break;
                     }
                     let _ = TranslateMessage(&msg);

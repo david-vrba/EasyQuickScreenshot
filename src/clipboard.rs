@@ -1,7 +1,7 @@
 // Copies a capture to the Windows clipboard as CF_DIB so it pastes anywhere.
 // Retries OpenClipboard briefly — another app may hold the clipboard lock.
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -19,6 +19,7 @@ pub fn copy_bgra(hwnd: HWND, bgra: &[u8], width: i32, height: i32) -> Result<(),
             GlobalAlloc(GMEM_MOVEABLE, total).map_err(|e| format!("GlobalAlloc: {}", e))?;
         let ptr = GlobalLock(hglobal) as *mut u8;
         if ptr.is_null() {
+            let _ = GlobalFree(hglobal);
             return Err("GlobalLock failed".into());
         }
 
@@ -44,6 +45,7 @@ pub fn copy_bgra(hwnd: HWND, bgra: &[u8], width: i32, height: i32) -> Result<(),
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if !opened {
+            let _ = GlobalFree(hglobal);
             return Err("clipboard is locked by another application".into());
         }
         let result = EmptyClipboard()
@@ -51,7 +53,10 @@ pub fn copy_bgra(hwnd: HWND, bgra: &[u8], width: i32, height: i32) -> Result<(),
             .map(|_| ())
             .map_err(|e| format!("SetClipboardData: {}", e));
         let _ = CloseClipboard();
-        // On success the clipboard owns hglobal — do not free it.
+        // On success the clipboard owns hglobal — free it only on failure.
+        if result.is_err() {
+            let _ = GlobalFree(hglobal);
+        }
         result
     }
 }

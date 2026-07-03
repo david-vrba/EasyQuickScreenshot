@@ -35,6 +35,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `build.rs` | Embeds `assets/icon.ico` into the exe (skips gracefully if no resource compiler) |
 | `assets/` | Brand icon set + `gen_icon.py`, the procedural generator that produced it (Python/Pillow) |
 | `scripts/autostart.ps1` | HKCU Run-key register/unregister |
+| `scripts/e2e-test.ps1` | Injected-input end-to-end test against a running instance |
 
 ## Invariants — do not break these
 
@@ -50,7 +51,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 
 - `eqs.exe --shoot X Y W H out.png` — headless capture of a virtual-screen rect (no overlay). Exit codes: 0 ok, 2 bad args, 3 capture failed, 4 empty crop, 5 write failed.
 - `eqs.exe --config path.toml` — run against a throwaway config (isolated shots dir, clipboard off).
-- Full e2e: start the app, inject `keybd_event`/`mouse_event` from PowerShell to press the hotkey and drag, then assert on the output file. See git history (`eqs-e2e.ps1`) for a working script.
+- Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` for save mode) against a running instance started with a throwaway `--config` — it injects the hotkey + a drag and the output file should appear. It moves the real mouse briefly.
 
 ## Build
 
@@ -63,7 +64,7 @@ Builds on stable Rust with the GNU **or** MSVC toolchain; no build scripts, no v
 
 ## Roadmap candidates
 
-- Settings/dashboard companion app (framework decision pending — must not touch the capture engine's speed)
+- Settings/dashboard/gallery companion app — **Tauri** (decided, not yet built); separate process launched from the tray so the capture engine's speed is untouched
 - Optional JPEG output for very large captures
 - `--last` CLI flag printing the temp-file path (for scripts)
 - Freeze-free live mode (skip the frozen snapshot, capture after selection)

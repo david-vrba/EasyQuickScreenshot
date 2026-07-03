@@ -178,7 +178,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if event == WM_RBUTTONUP {
                 match tray::show_menu(hwnd) {
                     tray::CMD_OPEN_SHOTS => open_in_explorer(&app.config.shots_dir),
-                    tray::CMD_OPEN_CONFIG => open_in_explorer(&app.config.config_path),
+                    tray::CMD_OPEN_CONFIG => {
+                        if !app.config.config_path.exists() {
+                            let _ = std::fs::write(&app.config.config_path, config::DEFAULT_CONFIG);
+                        }
+                        open_in_explorer(&app.config.config_path);
+                    }
                     tray::CMD_RELOAD_CONFIG => reload_config(app, hwnd),
                     tray::CMD_QUIT => {
                         let _ = DestroyWindow(hwnd);

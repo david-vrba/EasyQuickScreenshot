@@ -6,6 +6,7 @@
 # Screenshots must NEVER be committed — this is the whole point.
 /shots
 *.png
+*.png.tmp
 *.jpg
 *.jpeg
 *.bmp
