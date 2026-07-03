@@ -1,6 +1,6 @@
 [package]
 name = "easy-quick-screenshot"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Instant region screenshots for Windows. Hotkey, crosshair, drag, done — no flash, no shutter, no folder bloat."
 license = "MIT"
@@ -11,6 +11,9 @@ categories = ["multimedia::images", "os::windows-apis"]
 [[bin]]
 name = "eqs"
 path = "src/main.rs"
+
+[build-dependencies]
+winresource = "0.1"
 
 [dependencies]
 png = "0.17"

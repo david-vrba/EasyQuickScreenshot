@@ -9,12 +9,17 @@ A single resident Win32 process. One hidden window owns a tray icon and two glob
 ```
 hotkey pressed
   └─ capture.rs   grab entire virtual desktop → BGRA buffer   (screen is read ONCE)
-  └─ overlay.rs   fullscreen topmost window paints that frozen buffer dimmed;
-                  user drags a rectangle; returns rect or None (cancelled)
+  └─ overlay.rs   fullscreen topmost window paints that frozen buffer at FULL brightness
+                  (no dimming — a deliberate speed/clarity decision); crosshair guides and
+                  the drag border are drawn with R2_NOT pixel inversion so they read on any
+                  background; user drags a rectangle; returns rect or None (cancelled)
   └─ capture.rs   crop() slices the SAME buffer — overlay pixels can never leak in
   └─ save.rs      encode PNG → write <path>.png.tmp → rename (atomic-ish)
   └─ clipboard.rs copy crop as CF_DIB (best-effort, silent on failure)
 ```
+
+The `crosshair_style` setting picks exactly one position marker: `"lines"` (full-screen
+guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross cursor, no lines).
 
 ## Files
 
@@ -26,7 +31,9 @@ hotkey pressed
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling |
 | `src/save.rs` | PNG encode (`png` crate, fast compression), atomic writes, timestamped filenames |
 | `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps) |
-| `src/tray.rs` | Tray icon add/remove, right-click menu |
+| `src/tray.rs` | Tray icon add/remove (brand icon embedded via `include_bytes!`), right-click menu |
+| `build.rs` | Embeds `assets/icon.ico` into the exe (skips gracefully if no resource compiler) |
+| `assets/` | Brand icon set + `gen_icon.py`, the procedural generator that produced it (Python/Pillow) |
 | `scripts/autostart.ps1` | HKCU Run-key register/unregister |
 
 ## Invariants — do not break these
@@ -56,7 +63,7 @@ Builds on stable Rust with the GNU **or** MSVC toolchain; no build scripts, no v
 
 ## Roadmap candidates
 
-- Custom tray/exe icon (needs an `.rc` resource or `CreateIconIndirect`)
+- Settings/dashboard companion app (framework decision pending — must not touch the capture engine's speed)
 - Optional JPEG output for very large captures
 - `--last` CLI flag printing the temp-file path (for scripts)
 - Freeze-free live mode (skip the frozen snapshot, capture after selection)

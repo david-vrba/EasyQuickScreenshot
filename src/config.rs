@@ -26,6 +26,11 @@ temp_file = "temp.png"
 
 # Also copy every capture to the clipboard so you can paste it immediately
 copy_to_clipboard = true
+
+# What marks your position while selecting — exactly one of:
+#   "lines"  = full-screen crosshair lines (the mouse cursor is hidden)
+#   "cursor" = a plain crosshair mouse cursor, no lines
+crosshair_style = "lines"
 "#;
 
 #[derive(Deserialize)]
@@ -36,6 +41,7 @@ pub struct RawConfig {
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
+    pub crosshair_style: String,
 }
 
 impl Default for RawConfig {
@@ -46,8 +52,17 @@ impl Default for RawConfig {
             shots_dir: "shots".into(),
             temp_file: "temp.png".into(),
             copy_to_clipboard: true,
+            crosshair_style: "lines".into(),
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CrosshairStyle {
+    /// Full-screen guide lines through the pointer position; mouse cursor hidden.
+    Lines,
+    /// Plain crosshair mouse cursor only.
+    Cursor,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -65,6 +80,7 @@ pub struct Config {
     pub temp_path: PathBuf,
     pub saved_dir: PathBuf,
     pub copy_to_clipboard: bool,
+    pub crosshair_style: CrosshairStyle,
     pub config_path: PathBuf,
 }
 
@@ -123,6 +139,11 @@ pub fn load(cli_override: Option<&str>) -> Result<Config, String> {
         saved_dir: shots_dir.join("saved"),
         shots_dir,
         copy_to_clipboard: raw.copy_to_clipboard,
+        crosshair_style: match raw.crosshair_style.as_str() {
+            "lines" => CrosshairStyle::Lines,
+            "cursor" => CrosshairStyle::Cursor,
+            other => return Err(format!("invalid crosshair_style: \"{}\" (use \"lines\" or \"cursor\")", other)),
+        },
         config_path,
     })
 }

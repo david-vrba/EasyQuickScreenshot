@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon-256.png" width="110" alt="EasyQuickScreenshot">
+</p>
+
 # EasyQuickScreenshot
 
 **Region screenshots at the speed of a keystroke. No flash, no shutter, no folder full of junk.**
@@ -52,8 +56,8 @@ pwsh scripts/autostart.ps1 -Remove  # unregister
 
 ## Using it
 
-1. Press the hotkey. The screen freezes and dims under a crosshair. *(The capture is taken **before** the overlay appears, so the overlay can never end up in your screenshot.)*
-2. Drag a rectangle. The selected area shows at full brightness with live pixel dimensions.
+1. Press the hotkey. The screen freezes — no dimming, no effects — and full-screen crosshair lines mark your position. *(Prefer a plain crosshair cursor instead of the lines? Set `crosshair_style = "cursor"`.)* The capture is taken **before** the overlay appears, so the overlay can never end up in your screenshot.
+2. Drag a rectangle. The border and guides invert the pixels beneath them, so they're visible on any background, with live pixel dimensions below the selection.
 3. Release. The PNG is written and copied. No confirmation, no flash, no sound — check the tray tooltip if you forget your keys.
 
 **Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
@@ -68,6 +72,8 @@ save_hotkey  = "ctrl+alt+e"   # keys: a-z, 0-9, f1-f24, printscreen, space
 shots_dir    = "shots"        # relative paths resolve against this file's folder
 temp_file    = "temp.png"
 copy_to_clipboard = true
+crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden
+                              # "cursor" = plain crosshair cursor, no lines
 ```
 
 ## Good to know

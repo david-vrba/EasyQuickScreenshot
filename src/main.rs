@@ -208,7 +208,7 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
             return;
         }
     };
-    let Some((x, y, w, h)) = overlay::select_region(&shot) else {
+    let Some((x, y, w, h)) = overlay::select_region(&shot, app.config.crosshair_style) else {
         return; // cancelled
     };
     let Some((bgra, cw, ch)) = shot.crop(x, y, w, h) else {

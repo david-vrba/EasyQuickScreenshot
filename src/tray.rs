@@ -6,9 +6,9 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, SetForegroundWindow,
-    TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_APP,
+    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW,
+    SetForegroundWindow, TrackPopupMenu, HICON, IDI_APPLICATION, IMAGE_FLAGS, MF_SEPARATOR,
+    MF_STRING, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
 };
 
 pub const WM_TRAYICON: u32 = WM_APP + 1;
@@ -16,6 +16,16 @@ pub const CMD_OPEN_SHOTS: usize = 101;
 pub const CMD_OPEN_CONFIG: usize = 102;
 pub const CMD_RELOAD_CONFIG: usize = 103;
 pub const CMD_QUIT: usize = 104;
+
+/// The brand icon ships inside the binary; PNG data is valid icon-resource input
+/// on Vista+ so no .ico parsing is needed. Falls back to the stock app icon.
+fn app_icon() -> HICON {
+    static ICON_PNG: &[u8] = include_bytes!("../assets/icon-64.png");
+    unsafe {
+        CreateIconFromResourceEx(ICON_PNG, true, 0x00030000, 32, 32, IMAGE_FLAGS(0))
+            .unwrap_or_else(|_| LoadIconW(None, IDI_APPLICATION).unwrap_or_default())
+    }
+}
 
 pub fn add_icon(hwnd: HWND, tip: &str) {
     unsafe {
@@ -25,7 +35,7 @@ pub fn add_icon(hwnd: HWND, tip: &str) {
             uID: 1,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAYICON,
-            hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+            hIcon: app_icon(),
             ..Default::default()
         };
         for (i, c) in tip.encode_utf16().take(data.szTip.len() - 1).enumerate() {

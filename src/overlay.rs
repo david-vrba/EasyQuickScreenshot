@@ -1,5 +1,8 @@
 // Region-selection overlay: a borderless topmost window spanning all monitors,
-// painted with the frozen screenshot (dimmed) — drag a rectangle to reveal + select.
+// painted with the frozen screenshot at full brightness (no dimming — speed and
+// clarity over ceremony). Position is marked by full-screen crosshair lines or a
+// plain crosshair cursor (config `crosshair_style`). Lines and the selection border
+// are drawn with R2_NOT (pixel inversion) so they read on any background.
 // Returns the selection in screenshot-buffer coordinates. Esc / right-click cancels.
 
 use std::ffi::c_void;
@@ -7,25 +10,26 @@ use std::ffi::c_void;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreatePen,
-    DeleteDC, DeleteObject, EndPaint, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx,
-    Rectangle, ReleaseDC, SelectObject, SetBkMode, SetTextColor, TextOutW, BITMAPINFO,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
+    DeleteObject, EndPaint, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx, Rectangle,
+    ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
-    PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    PAINTSTRUCT, R2_COPYPEN, R2_NOT, SRCCOPY, TRANSPARENT, WHITE_PEN,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW,
-    RegisterClassW, SetForegroundWindow, ShowWindow, TranslateMessage, CREATESTRUCTW,
-    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_CROSS, MSG, SW_SHOW, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONDOWN, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow, TranslateMessage, CREATESTRUCTW,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_CROSS, MSG, SW_SHOW, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
 
 use crate::capture::Screenshot;
+use crate::config::CrosshairStyle;
 
 const CLASS_NAME: PCWSTR = w!("EQS_OVERLAY");
 const MIN_SELECTION_PX: i32 = 3;
@@ -33,9 +37,9 @@ const MIN_SELECTION_PX: i32 = 3;
 struct Overlay {
     back_dc: HDC,
     bright_dc: HDC,
-    dark_dc: HDC,
     width: i32,
     height: i32,
+    style: CrosshairStyle,
     dragging: bool,
     start: (i32, i32),
     cur: (i32, i32),
@@ -45,41 +49,33 @@ struct Overlay {
 
 /// Show the selection UI over the frozen screenshot.
 /// Returns (x, y, w, h) in buffer coordinates, or None if cancelled.
-pub fn select_region(shot: &Screenshot) -> Option<(i32, i32, i32, i32)> {
+pub fn select_region(shot: &Screenshot, style: CrosshairStyle) -> Option<(i32, i32, i32, i32)> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
         register_class_once(instance.into());
 
         let screen_dc = GetDC(HWND::default());
         let bright_dc = CreateCompatibleDC(screen_dc);
-        let dark_dc = CreateCompatibleDC(screen_dc);
         let back_dc = CreateCompatibleDC(screen_dc);
-
         let bright_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &shot.pixels);
-        let dark_pixels: Vec<u8> = shot.pixels.iter().map(|&v| ((v as u32 * 92) >> 8) as u8).collect();
-        let dark_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &dark_pixels);
         let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
         ReleaseDC(HWND::default(), screen_dc);
 
-        let (bright_bmp, dark_bmp) = match (bright_bmp, dark_bmp) {
-            (Some(b), Some(d)) => (b, d),
-            _ => {
-                let _ = DeleteDC(bright_dc);
-                let _ = DeleteDC(dark_dc);
-                let _ = DeleteDC(back_dc);
-                return None;
-            }
+        let Some(bright_bmp) = bright_bmp else {
+            let _ = DeleteObject(back_bmp);
+            let _ = DeleteDC(bright_dc);
+            let _ = DeleteDC(back_dc);
+            return None;
         };
         let old_bright = SelectObject(bright_dc, bright_bmp);
-        let old_dark = SelectObject(dark_dc, dark_bmp);
         let old_back = SelectObject(back_dc, back_bmp);
 
         let state = Box::into_raw(Box::new(Overlay {
             back_dc,
             bright_dc,
-            dark_dc,
             width: shot.width,
             height: shot.height,
+            style,
             dragging: false,
             start: (0, 0),
             cur: (-1, -1),
@@ -125,13 +121,10 @@ pub fn select_region(shot: &Screenshot) -> Option<(i32, i32, i32, i32)> {
         };
 
         SelectObject(bright_dc, old_bright);
-        SelectObject(dark_dc, old_dark);
         SelectObject(back_dc, old_back);
         let _ = DeleteObject(bright_bmp);
-        let _ = DeleteObject(dark_bmp);
         let _ = DeleteObject(back_bmp);
         let _ = DeleteDC(bright_dc);
-        let _ = DeleteDC(dark_dc);
         let _ = DeleteDC(back_dc);
         drop(Box::from_raw(state));
 
@@ -200,6 +193,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
     match msg {
         WM_ERASEBKGND => LRESULT(1),
+        WM_SETCURSOR if state.style == CrosshairStyle::Lines => {
+            // The full-screen lines ARE the cursor in this mode.
+            SetCursor(HCURSOR::default());
+            LRESULT(1)
+        }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
@@ -256,34 +254,34 @@ unsafe fn paint(state: &Overlay, hdc: HDC) {
     let (w, h) = (state.width, state.height);
     let back = state.back_dc;
 
-    // Dimmed background
-    let _ = BitBlt(back, 0, 0, w, h, state.dark_dc, 0, 0, SRCCOPY);
+    // Frozen screen at full brightness — no dimming.
+    let _ = BitBlt(back, 0, 0, w, h, state.bright_dc, 0, 0, SRCCOPY);
 
-    // Bright selection window + border
-    if state.dragging {
-        let (sx, sy, sw, sh) = normalized(state.start, state.cur);
-        if sw > 0 && sh > 0 {
-            let _ = BitBlt(back, sx, sy, sw, sh, state.bright_dc, sx, sy, SRCCOPY);
-        }
-        let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-        let old_pen = SelectObject(back, pen);
-        let old_brush = SelectObject(back, GetStockObject(NULL_BRUSH));
-        let _ = Rectangle(back, sx - 1, sy - 1, sx + sw + 1, sy + sh + 1);
-        SelectObject(back, old_brush);
-        SelectObject(back, old_pen);
-        let _ = DeleteObject(pen);
+    // Guides and border invert the pixels beneath them (R2_NOT): visible everywhere,
+    // and they exist only in the preview — the output crops from the untouched buffer.
+    let old_pen = SelectObject(back, GetStockObject(WHITE_PEN));
+    let old_brush = SelectObject(back, GetStockObject(NULL_BRUSH));
+    SetROP2(back, R2_NOT);
 
-        draw_size_label(state, back, sx, sy, sw, sh);
-    } else if state.cur.0 >= 0 {
-        // Crosshair guides before the drag starts
-        let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(0x00D0D0D0));
-        let old_pen = SelectObject(back, pen);
+    if state.style == CrosshairStyle::Lines && state.cur.0 >= 0 {
         let _ = MoveToEx(back, state.cur.0, 0, None);
         let _ = LineTo(back, state.cur.0, h);
         let _ = MoveToEx(back, 0, state.cur.1, None);
         let _ = LineTo(back, w, state.cur.1);
-        SelectObject(back, old_pen);
-        let _ = DeleteObject(pen);
+    }
+
+    if state.dragging {
+        let (sx, sy, sw, sh) = normalized(state.start, state.cur);
+        let _ = Rectangle(back, sx - 1, sy - 1, sx + sw + 1, sy + sh + 1);
+    }
+
+    SetROP2(back, R2_COPYPEN);
+    SelectObject(back, old_brush);
+    SelectObject(back, old_pen);
+
+    if state.dragging {
+        let (sx, sy, sw, sh) = normalized(state.start, state.cur);
+        draw_size_label(state, back, sx, sy, sw, sh);
     }
 
     let _ = BitBlt(hdc, 0, 0, w, h, back, 0, 0, SRCCOPY);
@@ -293,10 +291,13 @@ unsafe fn draw_size_label(state: &Overlay, dc: HDC, sx: i32, sy: i32, sw: i32, s
     let text: Vec<u16> = format!("{} x {}", sw, sh).encode_utf16().collect();
     let old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
-    // Place below-right of the selection, clamped to the screen
+    // Place below-right of the selection, clamped to the screen.
     let tx = (sx + 4).min(state.width - 80);
     let ty = (sy + sh + 6).min(state.height - 20);
+    // Shadow + white text so it reads on any background.
+    SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00000000));
+    let _ = TextOutW(dc, tx + 1, ty + 1, &text);
+    SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
     let _ = TextOutW(dc, tx, ty, &text);
     SelectObject(dc, old_font);
 }

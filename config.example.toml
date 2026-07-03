@@ -18,3 +18,8 @@ temp_file = "temp.png"
 
 # Also copy every capture to the clipboard so you can paste it immediately
 copy_to_clipboard = true
+
+# What marks your position while selecting — exactly one of:
+#   "lines"  = full-screen crosshair lines (the mouse cursor is hidden)
+#   "cursor" = a plain crosshair mouse cursor, no lines
+crosshair_style = "lines"
