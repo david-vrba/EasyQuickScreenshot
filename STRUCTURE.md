@@ -33,7 +33,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps) |
 | `src/tray.rs` | Tray icon add/remove (brand icon embedded via `include_bytes!`), right-click menu |
 | `build.rs` | Embeds `assets/icon.ico` into the exe (skips gracefully if no resource compiler) |
-| `assets/` | Brand icon set + `gen_icon.py`, the procedural generator that produced it (Python/Pillow) |
+| `assets/` | Brand icon: `ducky.ico` (master art) + `gen_icon.py`, which derives the square multi-size `icon.ico` / `icon-256.png` / `icon-64.png` the exe and tray embed |
 | `scripts/autostart.ps1` | HKCU Run-key register/unregister |
 | `scripts/e2e-test.ps1` | Injected-input end-to-end test against a running instance |
 
