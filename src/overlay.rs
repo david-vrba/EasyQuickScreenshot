@@ -11,8 +11,8 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
-    DeleteObject, EndPaint, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx, Rectangle,
-    ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW, BITMAPINFO,
+    DeleteObject, EndPaint, GetDC, GetDIBits, GetStockObject, InvalidateRect, LineTo, MoveToEx,
+    Rectangle, ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
     PAINTSTRUCT, R2_COPYPEN, R2_NOT, SRCCOPY, TRANSPARENT, WHITE_PEN,
 };
@@ -261,6 +261,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 unsafe fn paint(state: &Overlay, hdc: HDC) {
+    compose(state);
+    let _ = BitBlt(hdc, 0, 0, state.width, state.height, state.back_dc, 0, 0, SRCCOPY);
+}
+
+/// Draws one frame into `state.back_dc`. Pure GDI composition, no window/message-pump
+/// dependency — also used by `render_test_frame` to verify drawing headlessly.
+unsafe fn compose(state: &Overlay) {
     let (w, h) = (state.width, state.height);
     let back = state.back_dc;
 
@@ -274,10 +281,37 @@ unsafe fn paint(state: &Overlay, hdc: HDC) {
     SetROP2(back, R2_NOT);
 
     if state.style == CrosshairStyle::Lines && state.cur.0 >= 0 {
-        let _ = MoveToEx(back, state.cur.0, 0, None);
-        let _ = LineTo(back, state.cur.0, h);
-        let _ = MoveToEx(back, 0, state.cur.1, None);
-        let _ = LineTo(back, w, state.cur.1);
+        if state.dragging {
+            // `cur` sits exactly on one corner of the selection, so a full-length guide
+            // line shares a column/row with the border GDI actually draws there (Rectangle's
+            // bottom/right edge is exclusive, landing one pixel in from what you'd expect).
+            // R2_NOT inverts whatever's already drawn, so painting that pixel twice cancels
+            // back to the original color — an invisible edge. Gap the guides around the
+            // rectangle's full span so they never touch a border pixel on any side.
+            let (sx, sy, sw, sh) = normalized(state.start, state.cur);
+            let (bx0, by0, bx1, by1) = (sx - 1, sy - 1, sx + sw + 1, sy + sh + 1);
+            if by0 > 0 {
+                let _ = MoveToEx(back, state.cur.0, 0, None);
+                let _ = LineTo(back, state.cur.0, by0);
+            }
+            if by1 < h {
+                let _ = MoveToEx(back, state.cur.0, by1, None);
+                let _ = LineTo(back, state.cur.0, h);
+            }
+            if bx0 > 0 {
+                let _ = MoveToEx(back, 0, state.cur.1, None);
+                let _ = LineTo(back, bx0, state.cur.1);
+            }
+            if bx1 < w {
+                let _ = MoveToEx(back, bx1, state.cur.1, None);
+                let _ = LineTo(back, w, state.cur.1);
+            }
+        } else {
+            let _ = MoveToEx(back, state.cur.0, 0, None);
+            let _ = LineTo(back, state.cur.0, h);
+            let _ = MoveToEx(back, 0, state.cur.1, None);
+            let _ = LineTo(back, w, state.cur.1);
+        }
     }
 
     if state.dragging {
@@ -293,8 +327,80 @@ unsafe fn paint(state: &Overlay, hdc: HDC) {
         let (sx, sy, sw, sh) = normalized(state.start, state.cur);
         draw_size_label(state, back, sx, sy, sw, sh);
     }
+}
 
-    let _ = BitBlt(hdc, 0, 0, w, h, back, 0, 0, SRCCOPY);
+/// Headless verification hook: composes one frame against a real capture without ever
+/// creating a window, so the exact drawing code can be inspected pixel-for-pixel from
+/// a CLI flag. Returns top-down BGRA pixels.
+pub fn render_test_frame(
+    shot: &Screenshot,
+    style: CrosshairStyle,
+    start: (i32, i32),
+    cur: (i32, i32),
+) -> Result<Vec<u8>, String> {
+    unsafe {
+        let screen_dc = GetDC(HWND::default());
+        let bright_dc = CreateCompatibleDC(screen_dc);
+        let back_dc = CreateCompatibleDC(screen_dc);
+        let bright_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &shot.pixels);
+        let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
+        ReleaseDC(HWND::default(), screen_dc);
+
+        let Some(bright_bmp) = bright_bmp else {
+            let _ = DeleteObject(back_bmp);
+            let _ = DeleteDC(bright_dc);
+            let _ = DeleteDC(back_dc);
+            return Err("failed to build source DIB".into());
+        };
+        let old_bright = SelectObject(bright_dc, bright_bmp);
+        let old_back = SelectObject(back_dc, back_bmp);
+
+        let state = Overlay {
+            back_dc,
+            bright_dc,
+            width: shot.width,
+            height: shot.height,
+            style,
+            dragging: true,
+            start,
+            cur,
+            result: None,
+            done: false,
+        };
+        compose(&state);
+
+        let mut pixels = vec![0u8; shot.width as usize * shot.height as usize * 4];
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: shot.width,
+                biHeight: -shot.height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(
+            back_dc,
+            back_bmp,
+            0,
+            shot.height as u32,
+            Some(pixels.as_mut_ptr() as *mut _),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(bright_dc, old_bright);
+        SelectObject(back_dc, old_back);
+        let _ = DeleteObject(bright_bmp);
+        let _ = DeleteObject(back_bmp);
+        let _ = DeleteDC(bright_dc);
+        let _ = DeleteDC(back_dc);
+
+        Ok(pixels)
+    }
 }
 
 unsafe fn draw_size_label(state: &Overlay, dc: HDC, sx: i32, sy: i32, sw: i32, sh: i32) {

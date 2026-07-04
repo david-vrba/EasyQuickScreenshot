@@ -52,6 +52,13 @@ fn main() {
         std::process::exit(headless_shoot(&args[i + 1..]));
     }
 
+    // Headless test hook: eqs --render-test SX SY W H (lines|cursor) out.png
+    // Composes one real overlay frame (guides + selection border) with no window/message
+    // pump, so the drawing code can be verified pixel-for-pixel from a screenshot diff.
+    if let Some(i) = args.iter().position(|a| a == "--render-test") {
+        std::process::exit(headless_render_test(&args[i + 1..]));
+    }
+
     unsafe {
         let mutex = CreateMutexW(None, true, w!("EasyQuickScreenshot_SingleInstance"));
         if mutex.is_ok() && GetLastError() == ERROR_ALREADY_EXISTS {
@@ -301,6 +308,40 @@ fn headless_shoot(rest: &[String]) -> i32 {
         return 4;
     };
     match save::write_png_atomic(std::path::Path::new(&rest[4]), &bgra, cw, ch) {
+        Ok(()) => 0,
+        Err(_) => 5,
+    }
+}
+
+/// eqs --render-test SX SY W H (lines|cursor) out.png — draws one overlay frame (as if
+/// dragging from (SX,SY) to (SX+W,SY+H), in output-image/buffer coordinates — NOT
+/// virtual-screen coordinates, since the output PNG IS the buffer) over a real capture,
+/// with no window at all.
+/// Exit codes: 0 ok, 2 bad args, 3 capture failed, 4 compose failed, 5 write failed.
+fn headless_render_test(rest: &[String]) -> i32 {
+    if rest.len() < 6 {
+        return 2;
+    }
+    let parse = |s: &String| s.parse::<i32>().ok();
+    let (Some(x), Some(y), Some(w), Some(h)) =
+        (parse(&rest[0]), parse(&rest[1]), parse(&rest[2]), parse(&rest[3]))
+    else {
+        return 2;
+    };
+    let style = match rest[4].as_str() {
+        "lines" => config::CrosshairStyle::Lines,
+        "cursor" => config::CrosshairStyle::Cursor,
+        _ => return 2,
+    };
+    let Ok(shot) = capture::capture_virtual_screen() else {
+        return 3;
+    };
+    let start = (x, y);
+    let cur = (x + w, y + h);
+    let Ok(bgra) = overlay::render_test_frame(&shot, style, start, cur) else {
+        return 4;
+    };
+    match save::write_png_atomic(std::path::Path::new(&rest[5]), &bgra, shot.width, shot.height) {
         Ok(()) => 0,
         Err(_) => 5,
     }
