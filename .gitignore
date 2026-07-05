@@ -1,5 +1,7 @@
 # Build output
 /target
+settings-app/target
+settings-app/gen
 *.exe
 *.pdb
 
@@ -10,7 +12,10 @@
 *.jpg
 *.jpeg
 *.bmp
+# ...but brand/UI assets are part of the source and must be committed.
 !assets/**
+!settings-app/icons/**
+!settings-app/ui/**
 
 # Local user config (commit config.example.toml instead)
 /config.toml

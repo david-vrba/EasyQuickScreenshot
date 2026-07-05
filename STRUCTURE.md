@@ -2,7 +2,16 @@
 
 Architecture reference for contributors (human or AI). Read this before touching code — it is the entire mental model.
 
-## What this program is
+## Two processes, one config file
+
+The project is **two separate executables** that share `config.toml` and never block each other:
+
+- **`eqs.exe`** — the capture engine (this document's main subject). Tiny, resident, no runtime. Owns the hotkeys, overlay, and file writes. **Nothing may be added here that slows a capture.**
+- **`eqs-settings.exe`** — an optional Tauri companion (`settings-app/`) for editing settings, browsing the gallery, and an about/dashboard view. Launched on demand from the tray; a normal person never needs it, so the fast core never carries its weight.
+
+They coordinate through the filesystem plus one Win32 message: the tray menu spawns the settings app with `--config <path>`; after the settings app writes `config.toml` it posts `WM_APP+2` (`WM_EQS_RELOAD`) to the core's hidden `EQS_MAIN` window, which hot-reloads live. See `settings-app/` below.
+
+## What this program is (the core, `eqs.exe`)
 
 A single resident Win32 process. One hidden window owns a tray icon and two global hotkeys. A hotkey press runs one synchronous capture flow and returns to the message loop. There are no threads, no async, no state between captures.
 
@@ -36,6 +45,20 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `assets/` | Brand icon: `ducky.ico` (master art) + `gen_icon.py`, which derives the square multi-size `icon.ico` / `icon-256.png` / `icon-64.png` the exe and tray embed |
 | `scripts/autostart.ps1` | HKCU Run-key register/unregister |
 | `scripts/e2e-test.ps1` | Injected-input end-to-end test against a running instance |
+
+### `settings-app/` — the Tauri companion (`eqs-settings.exe`)
+
+Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no npm build step — `withGlobalTauri` exposes `invoke`), rendered by the OS WebView2. All logic is Rust commands:
+
+| File | Owns |
+|---|---|
+| `src/main.rs` | Tauri builder + command handlers (`load_config`, `save_config`, `gallery_stats`, `gallery_list`, `pick_shots_folder`, `open_path`/`reveal_path`/`open_url`) |
+| `src/config_io.rs` | Reads/writes the shared `config.toml` via `toml_edit` (comments survive); mirrors the core's config discovery + hotkey grammar so it never saves something the core can't register |
+| `src/gallery.rs` | Lists `saved/`, builds base64 PNG thumbnails (`image` crate) — self-contained, no asset-protocol scope needed |
+| `src/tray_signal.rs` | `FindWindow("EQS_MAIN")` + `PostMessage(WM_APP+2)` to hot-reload the running core after a save |
+| `ui/` | `index.html` / `styles.css` / `app.js` — Settings, Gallery, About tabs; the hotkey fields capture a live key-combo press |
+| `tauri.conf.json`, `capabilities/default.json` | Window + CSP config; permissions (`core:default`, `dialog`, `opener`) |
+| `icons/` | Tauri icon set derived from the ducky |
 
 ## Invariants — do not break these
 

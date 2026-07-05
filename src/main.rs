@@ -184,6 +184,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let event = (lparam.0 as u32) & 0xffff;
             if event == WM_RBUTTONUP {
                 match tray::show_menu(hwnd) {
+                    tray::CMD_SETTINGS => launch_settings(app),
                     tray::CMD_OPEN_SHOTS => open_in_explorer(&app.config.shots_dir),
                     tray::CMD_OPEN_CONFIG => {
                         if !app.config.config_path.exists() {
@@ -198,8 +199,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     _ => {}
                 }
             } else if event == WM_LBUTTONDBLCLK {
-                open_in_explorer(&app.config.shots_dir);
+                launch_settings(app);
             }
+            LRESULT(0)
+        }
+        tray::WM_EQS_RELOAD => {
+            // The settings app saved config.toml — apply it live.
+            reload_config(app, hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -252,6 +258,26 @@ fn reload_config(app: &mut App, hwnd: HWND) {
         },
         Err(e) => message_box(&format!("Config error (kept old config):\n{}", e), MB_ICONERROR),
     }
+}
+
+/// Launch the settings/gallery companion (a separate process — never touches the capture
+/// engine). Looks for eqs-settings.exe next to this exe; if it's already open, its
+/// single-instance behavior brings it forward. Passes the active config path so both
+/// operate on the exact same file.
+fn launch_settings(app: &App) {
+    let exe = config::exe_dir().join("eqs-settings.exe");
+    if !exe.exists() {
+        message_box(
+            "Settings app not found.\n\nExpected eqs-settings.exe next to eqs.exe.\n\
+             Build it with:  cd settings-app && cargo build --release",
+            MB_ICONWARNING,
+        );
+        return;
+    }
+    let _ = std::process::Command::new(exe)
+        .arg("--config")
+        .arg(&app.config.config_path)
+        .spawn();
 }
 
 fn open_in_explorer(path: &std::path::Path) {

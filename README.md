@@ -42,10 +42,11 @@ Both modes also copy the capture to the clipboard (configurable), so `Ctrl+V` wo
 **Or build from source** (Rust required):
 
 ```
-cargo build --release      # → target/release/eqs.exe
+cargo build --release                     # core → target/release/eqs.exe
+cd settings-app && cargo build --release   # optional UI → settings-app/target/release/eqs-settings.exe
 ```
 
-Run `eqs.exe` — a tray icon appears and the hotkeys are live. On first run it writes a default `config.toml` next to the exe.
+Run `eqs.exe` — a tray icon appears and the hotkeys are live. On first run it writes a default `config.toml` next to the exe. (The settings app is optional; see below.)
 
 **Start with Windows:**
 
@@ -62,9 +63,19 @@ pwsh scripts/autostart.ps1 -Remove  # unregister
 
 **Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
 
+## Settings & gallery (optional)
+
+Prefer a UI over editing a text file? There's an optional companion app, **`eqs-settings.exe`** — a tiny window (built with Tauri, using the WebView2 that's already on Windows) with three tabs:
+
+- **Settings** — edit hotkeys (just press the combo), folders, and options; saving applies to the running app instantly.
+- **Gallery** — browse your saved screenshots as thumbnails, open or reveal any one.
+- **About** — quick links and stats.
+
+Put `eqs-settings.exe` next to `eqs.exe` and open it from the tray → *Settings & gallery…*. The core capture app is a completely separate process, so this never adds a millisecond to a capture — power users can ignore it entirely, and people who don't touch config files get a friendly front door.
+
 ## Config
 
-`config.toml` lives next to `eqs.exe` (auto-created on first run). Tray → *Open config* to edit, tray → *Reload config* to apply without restarting.
+`config.toml` lives next to `eqs.exe` (auto-created on first run). Edit it in the settings app, or by hand — tray → *Open config* to edit, tray → *Reload config* to apply without restarting.
 
 ```toml
 quick_hotkey = "ctrl+alt+q"   # modifiers: ctrl, alt, shift, win

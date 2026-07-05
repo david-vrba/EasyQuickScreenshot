@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EasyQuickScreenshot</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <img src="ducky.png" alt="" class="brand-icon" />
+      <div class="brand-text">
+        <h1>EasyQuickScreenshot</h1>
+        <span class="brand-sub">Settings &amp; Gallery</span>
+      </div>
+      <nav class="tabs">
+        <button class="tab is-active" data-tab="settings">Settings</button>
+        <button class="tab" data-tab="gallery">Gallery</button>
+        <button class="tab" data-tab="about">About</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- SETTINGS -->
+      <section class="panel is-active" data-panel="settings">
+        <div class="field">
+          <label>Quick-shot hotkey</label>
+          <p class="hint">Overwrites one temp file every time — the path never changes, ideal for feeding AI agents.</p>
+          <button class="hotkey" data-hotkey="quick_hotkey" type="button"></button>
+        </div>
+
+        <div class="field">
+          <label>Save hotkey</label>
+          <p class="hint">Writes a timestamped PNG into the saved folder.</p>
+          <button class="hotkey" data-hotkey="save_hotkey" type="button"></button>
+        </div>
+
+        <div class="field">
+          <label>Screenshots folder</label>
+          <div class="row">
+            <input type="text" id="shots_dir" spellcheck="false" />
+            <button class="btn ghost" id="browse">Browse…</button>
+          </div>
+          <p class="hint" id="shots_abs"></p>
+        </div>
+
+        <div class="field">
+          <label>Quick-shot file name</label>
+          <input type="text" id="temp_file" spellcheck="false" />
+        </div>
+
+        <div class="field">
+          <label>Crosshair style</label>
+          <div class="segmented" id="crosshair_style">
+            <button type="button" data-val="lines">Full-screen lines</button>
+            <button type="button" data-val="cursor">Cursor only</button>
+          </div>
+        </div>
+
+        <div class="field toggle-field">
+          <label class="toggle">
+            <input type="checkbox" id="copy_to_clipboard" />
+            <span class="switch"></span>
+            <span>Copy every capture to the clipboard</span>
+          </label>
+        </div>
+
+        <div class="actionbar">
+          <span class="status" id="status"></span>
+          <button class="btn primary" id="save">Save changes</button>
+        </div>
+      </section>
+
+      <!-- GALLERY -->
+      <section class="panel" data-panel="gallery">
+        <div class="gallery-head">
+          <div class="stat-row" id="gallery_stats"></div>
+          <div class="gallery-actions">
+            <button class="btn ghost" id="open_saved">Open folder</button>
+            <button class="btn ghost" id="refresh_gallery">Refresh</button>
+          </div>
+        </div>
+        <div class="grid" id="gallery_grid"></div>
+        <div class="empty" id="gallery_empty" hidden>
+          <img src="ducky.png" alt="" />
+          <p>No saved screenshots yet.</p>
+          <p class="hint">Press your save hotkey and drag a region — it lands here.</p>
+        </div>
+      </section>
+
+      <!-- ABOUT -->
+      <section class="panel" data-panel="about">
+        <div class="about-card">
+          <img src="ducky.png" alt="" class="about-duck" />
+          <h2>EasyQuickScreenshot</h2>
+          <p class="hint">Region screenshots at the speed of a keystroke. No flash, no shutter, no folder bloat.</p>
+          <div class="about-links">
+            <button class="btn ghost" id="open_config">Open config file</button>
+            <button class="btn ghost" id="open_repo">GitHub</button>
+          </div>
+          <p class="config-path" id="config_path"></p>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

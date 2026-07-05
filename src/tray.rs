@@ -12,6 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub const WM_TRAYICON: u32 = WM_APP + 1;
+/// Posted by the settings app after it saves config.toml, so we hot-reload live.
+pub const WM_EQS_RELOAD: u32 = WM_APP + 2;
+pub const CMD_SETTINGS: usize = 100;
 pub const CMD_OPEN_SHOTS: usize = 101;
 pub const CMD_OPEN_CONFIG: usize = 102;
 pub const CMD_RELOAD_CONFIG: usize = 103;
@@ -63,6 +66,8 @@ pub fn show_menu(hwnd: HWND) -> usize {
         let Ok(menu) = CreatePopupMenu() else {
             return 0;
         };
+        let _ = AppendMenuW(menu, MF_STRING, CMD_SETTINGS, w!("Settings && gallery…"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_SHOTS, w!("Open shots folder"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_CONFIG, w!("Open config"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_RELOAD_CONFIG, w!("Reload config"));
