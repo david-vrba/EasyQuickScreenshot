@@ -20,6 +20,9 @@ settings-app/gen
 # Local user config (commit config.example.toml instead)
 /config.toml
 
+# Private launch/marketing working notes — never publish these to the public repo.
+/promo/
+
 # Misc
 *.log
 Cargo.lock.orig

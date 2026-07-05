@@ -18,6 +18,9 @@ quick_hotkey = "ctrl+alt+q"
 # Easy save: writes a timestamped file into <shots_dir>/saved/
 save_hotkey = "ctrl+alt+e"
 
+# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
+folder_hotkey = "ctrl+shift+alt+e"
+
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
 
@@ -38,6 +41,7 @@ crosshair_style = "lines"
 pub struct RawConfig {
     pub quick_hotkey: String,
     pub save_hotkey: String,
+    pub folder_hotkey: String,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -49,6 +53,7 @@ impl Default for RawConfig {
         RawConfig {
             quick_hotkey: "ctrl+alt+q".into(),
             save_hotkey: "ctrl+alt+e".into(),
+            folder_hotkey: "ctrl+shift+alt+e".into(),
             shots_dir: "shots".into(),
             temp_file: "temp.png".into(),
             copy_to_clipboard: true,
@@ -74,8 +79,10 @@ pub struct Hotkey {
 pub struct Config {
     pub quick_hotkey: Hotkey,
     pub save_hotkey: Hotkey,
+    pub folder_hotkey: Hotkey,
     pub quick_hotkey_label: String,
     pub save_hotkey_label: String,
+    pub folder_hotkey_label: String,
     pub shots_dir: PathBuf,
     pub temp_path: PathBuf,
     pub saved_dir: PathBuf,
@@ -133,8 +140,11 @@ pub fn load(cli_override: Option<&str>) -> Result<Config, String> {
             .ok_or(format!("invalid quick_hotkey: \"{}\"", raw.quick_hotkey))?,
         save_hotkey: parse_hotkey(&raw.save_hotkey)
             .ok_or(format!("invalid save_hotkey: \"{}\"", raw.save_hotkey))?,
+        folder_hotkey: parse_hotkey(&raw.folder_hotkey)
+            .ok_or(format!("invalid folder_hotkey: \"{}\"", raw.folder_hotkey))?,
         quick_hotkey_label: raw.quick_hotkey,
         save_hotkey_label: raw.save_hotkey,
+        folder_hotkey_label: raw.folder_hotkey,
         temp_path: shots_dir.join(&raw.temp_file),
         saved_dir: shots_dir.join("saved"),
         shots_dir,

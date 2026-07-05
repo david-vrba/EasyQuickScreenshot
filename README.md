@@ -27,6 +27,8 @@ Both modes also copy the capture to the clipboard (configurable), so `Ctrl+V` wo
 
 **Q**uick and **E**asy — that's the name.
 
+There's also a third hotkey, `Ctrl+Shift+Alt+E`, that just **opens your saved-screenshots folder** in Explorer — no capture. It always opens wherever your save folder currently points, so it stays correct even after you change the folder in settings.
+
 ### Why a fixed temp file is a superpower
 
 `shots/temp.png` is always the latest thing you captured, at a path that never changes. That makes it scriptable:
@@ -78,9 +80,10 @@ Put `eqs-settings.exe` next to `eqs.exe` and open it from the tray → *Settings
 `config.toml` lives next to `eqs.exe` (auto-created on first run). Edit it in the settings app, or by hand — tray → *Open config* to edit, tray → *Reload config* to apply without restarting.
 
 ```toml
-quick_hotkey = "ctrl+alt+q"   # modifiers: ctrl, alt, shift, win
-save_hotkey  = "ctrl+alt+e"   # keys: a-z, 0-9, f1-f24, printscreen, space
-shots_dir    = "shots"        # relative paths resolve against this file's folder
+quick_hotkey  = "ctrl+alt+q"        # modifiers: ctrl, alt, shift, win
+save_hotkey   = "ctrl+alt+e"        # keys: a-z, 0-9, f1-f24, printscreen, space
+folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
+shots_dir     = "shots"             # relative paths resolve against this file's folder
 temp_file    = "temp.png"
 copy_to_clipboard = true
 crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden

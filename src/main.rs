@@ -33,6 +33,7 @@ use crate::config::Config;
 
 const HOTKEY_QUICK: i32 = 1;
 const HOTKEY_SAVE: i32 = 2;
+const HOTKEY_FOLDER: i32 = 3;
 
 /// Blocks re-entrant captures if a hotkey fires while the overlay is already open.
 static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
@@ -143,6 +144,11 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
     if RegisterHotKey(hwnd, HOTKEY_SAVE, cfg.save_hotkey.modifiers, cfg.save_hotkey.vk).is_err() {
         failed.push(cfg.save_hotkey_label.clone());
     }
+    if RegisterHotKey(hwnd, HOTKEY_FOLDER, cfg.folder_hotkey.modifiers, cfg.folder_hotkey.vk)
+        .is_err()
+    {
+        failed.push(cfg.folder_hotkey_label.clone());
+    }
     if !failed.is_empty() {
         message_box(
             &format!(
@@ -158,6 +164,7 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
 unsafe fn unregister_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(hwnd, HOTKEY_QUICK);
     let _ = UnregisterHotKey(hwnd, HOTKEY_SAVE);
+    let _ = UnregisterHotKey(hwnd, HOTKEY_FOLDER);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -170,7 +177,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         WM_HOTKEY => {
             let id = wparam.0 as i32;
-            if (id == HOTKEY_QUICK || id == HOTKEY_SAVE)
+            if id == HOTKEY_FOLDER {
+                // Not a capture — just reveal the current save folder. Reads the live
+                // config, so it always opens wherever shots_dir points right now.
+                open_in_explorer(&app.config.saved_dir);
+            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE)
                 && IN_CAPTURE
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()

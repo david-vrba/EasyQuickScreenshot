@@ -21,6 +21,7 @@ async function loadConfig() {
   const c = state.cfg;
   setHotkey("quick_hotkey", c.quick_hotkey);
   setHotkey("save_hotkey", c.save_hotkey);
+  setHotkey("folder_hotkey", c.folder_hotkey);
   document.getElementById("shots_dir").value = c.shots_dir;
   document.getElementById("shots_abs").textContent = "→ " + c.shots_dir_abs;
   document.getElementById("temp_file").value = c.temp_file;
@@ -111,6 +112,7 @@ document.getElementById("save").addEventListener("click", async () => {
   const c = state.cfg;
   c.quick_hotkey = document.querySelector('.hotkey[data-hotkey="quick_hotkey"]').textContent.trim();
   c.save_hotkey = document.querySelector('.hotkey[data-hotkey="save_hotkey"]').textContent.trim();
+  c.folder_hotkey = document.querySelector('.hotkey[data-hotkey="folder_hotkey"]').textContent.trim();
   c.shots_dir = document.getElementById("shots_dir").value;
   c.temp_file = document.getElementById("temp_file").value;
   c.copy_to_clipboard = document.getElementById("copy_to_clipboard").checked;

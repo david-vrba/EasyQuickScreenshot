@@ -17,6 +17,9 @@ quick_hotkey = "ctrl+alt+q"
 # Easy save: writes a timestamped file into <shots_dir>/saved/
 save_hotkey = "ctrl+alt+e"
 
+# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
+folder_hotkey = "ctrl+shift+alt+e"
+
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
 
@@ -36,6 +39,7 @@ crosshair_style = "lines"
 pub struct ConfigDto {
     pub quick_hotkey: String,
     pub save_hotkey: String,
+    pub folder_hotkey: String,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -116,6 +120,7 @@ pub fn load() -> ConfigDto {
     ConfigDto {
         quick_hotkey: str_field(&doc, "quick_hotkey", "ctrl+alt+q"),
         save_hotkey: str_field(&doc, "save_hotkey", "ctrl+alt+e"),
+        folder_hotkey: str_field(&doc, "folder_hotkey", "ctrl+shift+alt+e"),
         shots_dir,
         temp_file,
         copy_to_clipboard: doc
@@ -140,6 +145,7 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
     let mut doc = read_document(&config_path);
     doc["quick_hotkey"] = value(dto.quick_hotkey.trim());
     doc["save_hotkey"] = value(dto.save_hotkey.trim());
+    doc["folder_hotkey"] = value(dto.folder_hotkey.trim());
     doc["shots_dir"] = value(dto.shots_dir.trim());
     doc["temp_file"] = value(dto.temp_file.trim());
     doc["copy_to_clipboard"] = value(dto.copy_to_clipboard);
@@ -152,8 +158,10 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
 fn validate(dto: &ConfigDto) -> Result<(), String> {
     validate_hotkey(&dto.quick_hotkey).map_err(|e| format!("Quick-shot hotkey: {e}"))?;
     validate_hotkey(&dto.save_hotkey).map_err(|e| format!("Save hotkey: {e}"))?;
-    if dto.quick_hotkey.trim().eq_ignore_ascii_case(dto.save_hotkey.trim()) {
-        return Err("The two hotkeys must be different.".into());
+    validate_hotkey(&dto.folder_hotkey).map_err(|e| format!("Open-folder hotkey: {e}"))?;
+    let (q, s, f) = (dto.quick_hotkey.trim(), dto.save_hotkey.trim(), dto.folder_hotkey.trim());
+    if q.eq_ignore_ascii_case(s) || q.eq_ignore_ascii_case(f) || s.eq_ignore_ascii_case(f) {
+        return Err("All three hotkeys must be different.".into());
     }
     if dto.temp_file.trim().is_empty() {
         return Err("Temp file name can't be empty.".into());
