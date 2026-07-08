@@ -51,6 +51,10 @@ Installs to your user folder (no admin), launches it, and prints the hotkeys. Ad
 
 **Or grab it yourself:** download `eqs.exe` from [Releases](../../releases), drop it in any writable folder, run it. No installer.
 
+**Package managers:**
+- **Scoop** — `scoop bucket add eqs https://github.com/david-vrba/EasyQuickScreenshot` then `scoop install eqs/eqs`
+- **winget** — `winget install DavidVrba.EasyQuickScreenshot` *(pending review in the Microsoft catalog)*
+
 **Or build from source** (Rust required):
 
 ```
