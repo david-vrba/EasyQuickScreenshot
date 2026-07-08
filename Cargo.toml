@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
 [dependencies.windows]
-version = "0.58"
+version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
