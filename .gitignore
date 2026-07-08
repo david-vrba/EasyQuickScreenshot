@@ -23,6 +23,27 @@ settings-app/gen
 # Private launch/marketing working notes — never publish these to the public repo.
 /promo/
 
+# Secrets & credentials — must NEVER be committed (none exist today; this is a safety net)
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+secrets.*
+*.secret
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
 # Misc
 *.log
 Cargo.lock.orig
