@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Core capture engine
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Settings/gallery companion (Tauri)
+  - package-ecosystem: cargo
+    directory: /settings-app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # CI action versions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
