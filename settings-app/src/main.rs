@@ -62,6 +62,13 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    // Defense-in-depth: this is only ever called with the project's GitHub URL, but guard
+    // the scheme so it can never become an arbitrary-launch primitive (file://, a custom
+    // protocol handler, etc.) if the webview is ever abused.
+    let allowed = url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:");
+    if !allowed {
+        return Err("refused to open a non-web URL".into());
+    }
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
