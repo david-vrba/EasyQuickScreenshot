@@ -39,7 +39,17 @@ There's also a third hotkey, `Ctrl+Shift+Alt+E`, that just **opens your saved-sc
 
 ## Install
 
-**Download** the latest `eqs.exe` from [Releases](../../releases) and put it in any writable folder — done. No installer, no runtime, no admin rights.
+**Requirements:** Windows 10 or 11 · 64-bit. No runtime, no admin, no account. *(The optional settings app also uses WebView2 — already present on Windows 11 and most Windows 10.)*
+
+**One line** — PowerShell fetches the latest build and starts it:
+
+```powershell
+irm https://raw.githubusercontent.com/david-vrba/EasyQuickScreenshot/main/scripts/install.ps1 | iex
+```
+
+Installs to your user folder (no admin), launches it, and prints the hotkeys. Add `-Autostart` to also start it on login.
+
+**Or grab it yourself:** download `eqs.exe` from [Releases](../../releases), drop it in any writable folder, run it. No installer.
 
 **Or build from source** (Rust required):
 
