@@ -13,7 +13,7 @@ They coordinate through the filesystem plus one Win32 message: the tray menu spa
 
 ## What this program is (the core, `eqs.exe`)
 
-A single resident Win32 process. One hidden window owns a tray icon and two global hotkeys. A hotkey press runs one synchronous capture flow and returns to the message loop. There are no threads, no async, no state between captures.
+A single resident Win32 process. One hidden window owns a tray icon and three global hotkeys: two run a synchronous capture flow (quick / save), the third just opens the current save folder in Explorer (no capture). A capture press runs one synchronous flow and returns to the message loop. There are no threads, no async, no state between captures.
 
 ```
 hotkey pressed
@@ -34,7 +34,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 
 | File | Owns |
 |---|---|
-| `src/main.rs` | Entry point, single-instance mutex, DPI awareness, hidden window + message loop, hotkey registration, tray-menu commands, the capture flow glue, headless `--shoot` test hook |
+| `src/main.rs` | Entry point, single-instance mutex, DPI awareness, hidden window + message loop, hotkey registration (quick / save / open-folder), tray-menu commands (launch settings, open shots/config, reload), the capture flow glue, headless `--shoot` and `--render-test` hooks |
 | `src/config.rs` | `config.toml` discovery/parsing, defaults, hotkey-string → `(modifiers, vk)` parsing |
 | `src/capture.rs` | `Screenshot` (BGRA buffer + geometry), `capture_virtual_screen()` via GDI BitBlt, `crop()` |
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling |
@@ -60,6 +60,18 @@ Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no 
 | `tauri.conf.json`, `capabilities/default.json` | Window + CSP config; permissions (`core:default`, `dialog`, `opener`) |
 | `icons/` | Tauri icon set derived from the ducky |
 
+### Project meta (not code)
+
+| Path | Purpose |
+|---|---|
+| `scripts/install.ps1` | One-line installer (`irm … \| iex`) — pulls the latest release exe(s) into the user folder |
+| `.github/workflows/ci.yml` | CI — builds core + settings app + advisory clippy on every push/PR |
+| `.github/workflows/release.yml` | CD — a `v*` tag builds both exes and publishes the release with checksums |
+| `.github/dependabot.yml` | Weekly cargo + GitHub-Actions dependency updates |
+| `SECURITY.md` / `ROADMAP.md` | Security policy (local-only, private reporting) + public roadmap |
+| `bucket/eqs.json` | Scoop manifest — the repo doubles as a Scoop bucket |
+| `packaging/winget/` | winget manifests (portable) submitted to microsoft/winget-pkgs |
+
 ## Invariants — do not break these
 
 1. **One capture per flow.** The screen is read once into `Screenshot.pixels` (top-down BGRA, 4 bytes/px). Overlay preview AND final crop both come from this buffer. Never re-grab the screen after the overlay closes — the overlay would be in the shot and the content may have changed.
@@ -73,6 +85,7 @@ Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no 
 ## Testing without a human
 
 - `eqs.exe --shoot X Y W H out.png` — headless capture of a virtual-screen rect (no overlay). Exit codes: 0 ok, 2 bad args, 3 capture failed, 4 empty crop, 5 write failed.
+- `eqs.exe --render-test SX SY W H lines|cursor out.png` — composes one real overlay frame (guides + selection border) over a live capture with no window, so the drawing code is verifiable pixel-for-pixel from a screenshot diff. Same exit-code scheme.
 - `eqs.exe --config path.toml` — run against a throwaway config (isolated shots dir, clipboard off).
 - Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` for save mode) against a running instance started with a throwaway `--config` — it injects the hotkey + a drag and the output file should appear. It moves the real mouse briefly.
 
@@ -85,10 +98,10 @@ cargo build --release    # LTO, stripped, ~600 KB
 
 Builds on stable Rust with the GNU **or** MSVC toolchain; no build scripts, no vendored assets. The only dependencies are `windows` (Win32 bindings), `png`, `serde` + `toml`.
 
-## Roadmap candidates
+## Roadmap
 
-- Settings/dashboard/gallery companion app — **Tauri** (decided, not yet built); separate process launched from the tray so the capture engine's speed is untouched
-- Optional JPEG output for very large captures
-- `--last` CLI flag printing the temp-file path (for scripts)
-- Freeze-free live mode (skip the frozen snapshot, capture after selection)
-- Linux/macOS ports (the module boundaries were chosen so only `capture`/`overlay`/`clipboard`/`tray` are OS-specific)
+The live roadmap (shipped / next / considered) is [`ROADMAP.md`](ROADMAP.md). Architecture-facing notes:
+
+- The settings/gallery companion (**Tauri**) is **shipped** — see `settings-app/` above.
+- Linux/macOS ports would only touch `capture` / `overlay` / `clipboard` / `tray`; `main` / `config` / `save` are already portable.
+- Freeze-free live mode (skip the frozen snapshot) and optional JPEG/WebP output remain open ideas.
