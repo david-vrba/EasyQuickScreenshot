@@ -437,6 +437,11 @@ unsafe fn annotate_proc(
                 let (x, y) = lparam_xy(lparam);
                 let (cx, cy) = clamp_to(state.sel, x, y);
                 shape.drag_to(cx, cy, key_down(VK_SHIFT));
+                // A Shift-constrained endpoint can land outside the region; pull it back so
+                // the preview never shows more than the export will keep.
+                if let Some(end) = shape.pts.last_mut() {
+                    *end = clamp_to(state.sel, end.0, end.1);
+                }
                 let _ = InvalidateRect(hwnd, None, false);
             }
             LRESULT(0)
