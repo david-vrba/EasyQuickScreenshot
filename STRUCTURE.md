@@ -40,7 +40,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling; also the second (annotate) phase and flattening the drawing into the exported crop |
 | `src/annotate.rs` | Quick-annotate: shape model (rect/arrow/line/circle/pen), GDI+ anti-aliased rendering, the floating toolbar + its hit-testing and shortcuts |
 | `src/save.rs` | PNG encode (`png` crate, fast compression), atomic writes, timestamped filenames |
-| `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps) |
+| `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps); CF_UNICODETEXT read/write for the annotate text tool |
 | `src/tray.rs` | Tray icon add/remove (brand icon embedded via `include_bytes!`), right-click menu |
 | `build.rs` | Embeds `assets/icon.ico` into the exe (skips gracefully if no resource compiler) |
 | `assets/` | Brand icon: `ducky.ico` (master art) + `gen_icon.py`, which derives the square multi-size `icon.ico` / `icon-256.png` / `icon-64.png` the exe and tray embed |

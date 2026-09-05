@@ -7,10 +7,10 @@
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateRectRgn, DeleteObject, GetStockObject, GetTextExtentPoint32W,
+    CreateFontW, CreateRectRgn, DeleteObject, GetStockObject, GetTextExtentPoint32W, PatBlt,
     SelectClipRgn, SelectObject, SetBkMode, SetTextColor, TextOutW, CLEARTYPE_QUALITY,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FW_BOLD, HDC, HFONT,
-    OUT_DEFAULT_PRECIS, TRANSPARENT,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DSTINVERT, FW_BOLD,
+    HDC, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::Graphics::GdiPlus::{
     CombineModeReplace, FillModeAlternate, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill,
@@ -206,6 +206,75 @@ fn bounds_of(a: (i32, i32), b: (i32, i32)) -> Rect {
     )
 }
 
+// ---------------------------------------------------------------- text editing
+
+/// The text being typed plus its one selection state. There is no cursor position: text
+/// grows at the end, and Ctrl+A selects everything, which the next edit then replaces.
+pub struct TextInput {
+    pub text: Vec<u16>,
+    pub all_selected: bool,
+}
+
+impl TextInput {
+    pub fn new() -> TextInput {
+        TextInput { text: Vec::new(), all_selected: false }
+    }
+
+    fn replace_selection(&mut self) {
+        if self.all_selected {
+            self.text.clear();
+            self.all_selected = false;
+        }
+    }
+
+    pub fn type_char(&mut self, ch: u16) {
+        self.replace_selection();
+        self.text.push(ch);
+    }
+
+    pub fn backspace(&mut self) {
+        if self.all_selected {
+            self.replace_selection();
+        } else {
+            self.text.pop();
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.all_selected = !self.text.is_empty();
+    }
+
+    /// Clipboard text may span lines; the tool renders one line, so breaks become spaces.
+    pub fn paste(&mut self, clip: &[u16]) {
+        self.replace_selection();
+        let mut last_space = self.text.last().is_none_or(|&u| u == ' ' as u16);
+        for &u in clip {
+            let u = if u == '\r' as u16 || u == '\n' as u16 || u == '\t' as u16 {
+                ' ' as u16
+            } else {
+                u
+            };
+            if u == ' ' as u16 && last_space {
+                continue;
+            }
+            last_space = u == ' ' as u16;
+            self.text.push(u);
+        }
+    }
+
+    /// Everything typed so far — Ctrl+C has no partial selection to be narrower than.
+    pub fn copy(&self) -> Vec<u16> {
+        self.text.clone()
+    }
+
+    pub fn cut(&mut self) -> Vec<u16> {
+        let out = self.text.clone();
+        self.text.clear();
+        self.all_selected = false;
+        out
+    }
+}
+
 // ---------------------------------------------------------------- text (GDI)
 
 /// Text size follows the stroke width so the wheel controls both.
@@ -253,7 +322,13 @@ fn colorref(argb: u32) -> COLORREF {
     COLORREF((b << 16) | (g << 8) | r)
 }
 
-unsafe fn draw_text(hdc: HDC, s: &Shape, caret: bool) {
+/// How the text being typed should be shown: with a caret, and inverted when select-all is on.
+pub struct Typing<'a> {
+    pub shape: &'a Shape,
+    pub all_selected: bool,
+}
+
+unsafe fn draw_text(hdc: HDC, s: &Shape, typing: Option<&Typing>) {
     let font = make_font(s.width);
     let old = SelectObject(hdc, font);
     SetBkMode(hdc, TRANSPARENT);
@@ -262,7 +337,7 @@ unsafe fn draw_text(hdc: HDC, s: &Shape, caret: bool) {
     if !s.text.is_empty() {
         let _ = TextOutW(hdc, x, y, &s.text);
     }
-    if caret {
+    if let Some(t) = typing {
         let (w, h) = {
             let mut size = SIZE::default();
             if s.text.is_empty() {
@@ -272,6 +347,11 @@ unsafe fn draw_text(hdc: HDC, s: &Shape, caret: bool) {
                 (size.cx, size.cy)
             }
         };
+        if t.all_selected && w > 0 {
+            // Inverting the text box is the classic "everything is selected" look and
+            // stays visible on any background without needing alpha.
+            let _ = PatBlt(hdc, x - 1, y, w + 2, h, DSTINVERT);
+        }
         let bar: Vec<u16> = "|".encode_utf16().collect();
         let _ = TextOutW(hdc, x + w, y + (h - font_px(s.width)) / 2, &bar);
     }
@@ -352,7 +432,7 @@ pub unsafe fn draw_shapes(
     clip: Rect,
     shapes: &[Shape],
     active: Option<&Shape>,
-    typing: Option<&Shape>,
+    typing: Option<Typing>,
 ) {
     if shapes.is_empty() && active.is_none() && typing.is_none() {
         return;
@@ -367,10 +447,10 @@ pub unsafe fn draw_shapes(
     let rgn = CreateRectRgn(clip.0, clip.1, clip.0 + clip.2, clip.1 + clip.3);
     SelectClipRgn(hdc, rgn);
     for s in shapes.iter().filter(|s| s.tool == Tool::Text) {
-        draw_text(hdc, s, false);
+        draw_text(hdc, s, None);
     }
-    if let Some(s) = typing {
-        draw_text(hdc, s, true);
+    if let Some(t) = typing.as_ref() {
+        draw_text(hdc, t.shape, Some(t));
     }
     SelectClipRgn(hdc, None);
     let _ = DeleteObject(rgn);
@@ -596,7 +676,7 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], tool: Tool, color: usize, w
         }
     }
     let hint: Vec<u16> =
-        "R rect  A arrow  L line  C circle  P pen  T text   1-8 colour   wheel size   drag a border to move   Ctrl+Z undo   Enter quick   Shift+Enter save   Esc"
+        "R rect  A arrow  L line  C circle  P pen  T text (Ctrl+A/C/V/X while typing)   1-8 colour   wheel size   drag a border to move   Ctrl+Z undo   Enter quick   Shift+Enter save   Esc"
             .encode_utf16()
             .collect();
     SetTextColor(hdc, COLORREF(0x00000000));
@@ -734,6 +814,75 @@ mod tests {
         assert!(hits_rect_border(r, 100, 250));
         assert!(hits_rect_border(r, 503, 250));
         assert!(!hits_rect_border(r, 300, 250));
+    }
+
+    fn u(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn select_all_then_typing_replaces_everything() {
+        let mut t = TextInput::new();
+        for c in u("hello") {
+            t.type_char(c);
+        }
+        t.select_all();
+        assert!(t.all_selected);
+        t.type_char('x' as u16);
+        assert_eq!(t.text, u("x"));
+        assert!(!t.all_selected, "the replacement clears the selection");
+    }
+
+    #[test]
+    fn backspace_deletes_one_or_all() {
+        let mut t = TextInput::new();
+        for c in u("abc") {
+            t.type_char(c);
+        }
+        t.backspace();
+        assert_eq!(t.text, u("ab"));
+        t.select_all();
+        t.backspace();
+        assert!(t.text.is_empty());
+        t.backspace(); // nothing left — must not panic
+        assert!(t.text.is_empty());
+    }
+
+    #[test]
+    fn select_all_on_empty_text_selects_nothing() {
+        let mut t = TextInput::new();
+        t.select_all();
+        assert!(!t.all_selected);
+    }
+
+    #[test]
+    fn paste_flattens_line_breaks_and_replaces_a_selection() {
+        let mut t = TextInput::new();
+        t.paste(&u("one\r\ntwo\tthree"));
+        assert_eq!(t.text, u("one two three"));
+        t.select_all();
+        t.paste(&u("new"));
+        assert_eq!(t.text, u("new"));
+        t.paste(&u(" more"));
+        assert_eq!(t.text, u("new more"), "paste appends when nothing is selected");
+    }
+
+    #[test]
+    fn paste_does_not_double_spaces_at_the_join() {
+        let mut t = TextInput::new();
+        t.paste(&u("end "));
+        t.paste(&u(" start"));
+        assert_eq!(t.text, u("end start"));
+    }
+
+    #[test]
+    fn cut_returns_the_text_and_empties_the_input() {
+        let mut t = TextInput::new();
+        t.paste(&u("gone"));
+        assert_eq!(t.copy(), u("gone"));
+        assert_eq!(t.cut(), u("gone"));
+        assert!(t.text.is_empty());
+        assert!(!t.all_selected);
     }
 
     #[test]

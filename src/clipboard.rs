@@ -1,13 +1,84 @@
-// Copies a capture to the Windows clipboard as CF_DIB so it pastes anywhere.
+// Copies a capture to the Windows clipboard as CF_DIB so it pastes anywhere, and moves
+// plain text in and out for the annotate text tool.
 // Retries OpenClipboard briefly — another app may hold the clipboard lock.
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 
 const CF_DIB: u32 = 8;
+const CF_UNICODETEXT: u32 = 13;
+
+/// OpenClipboard fails while another app holds the lock; a few short retries cover it.
+unsafe fn open_with_retry(hwnd: HWND) -> bool {
+    for _ in 0..10 {
+        if OpenClipboard(hwnd).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+/// Put UTF-16 text on the clipboard (a trailing NUL is added here).
+pub fn copy_text(hwnd: HWND, text: &[u16]) -> Result<(), String> {
+    let bytes = (text.len() + 1) * 2;
+    unsafe {
+        let hglobal: HGLOBAL =
+            GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| format!("GlobalAlloc: {}", e))?;
+        let ptr = GlobalLock(hglobal) as *mut u16;
+        if ptr.is_null() {
+            let _ = GlobalFree(hglobal);
+            return Err("GlobalLock failed".into());
+        }
+        std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len());
+        *ptr.add(text.len()) = 0;
+        let _ = GlobalUnlock(hglobal);
+
+        if !open_with_retry(hwnd) {
+            let _ = GlobalFree(hglobal);
+            return Err("clipboard is locked by another application".into());
+        }
+        let result = EmptyClipboard()
+            .and_then(|_| SetClipboardData(CF_UNICODETEXT, HANDLE(hglobal.0)))
+            .map(|_| ())
+            .map_err(|e| format!("SetClipboardData: {}", e));
+        let _ = CloseClipboard();
+        if result.is_err() {
+            let _ = GlobalFree(hglobal);
+        }
+        result
+    }
+}
+
+/// Read UTF-16 text from the clipboard, without the trailing NUL. None if there is no text.
+pub fn read_text(hwnd: HWND) -> Option<Vec<u16>> {
+    unsafe {
+        if !open_with_retry(hwnd) {
+            return None;
+        }
+        let text = GetClipboardData(CF_UNICODETEXT).ok().and_then(|handle| {
+            let hglobal = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hglobal) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+            // Stop at the NUL, but never read past what the block actually holds.
+            let max = GlobalSize(hglobal) / 2;
+            let units = std::slice::from_raw_parts(ptr, max);
+            let len = units.iter().position(|&u| u == 0).unwrap_or(max);
+            let out = units[..len].to_vec();
+            let _ = GlobalUnlock(hglobal);
+            Some(out)
+        });
+        let _ = CloseClipboard();
+        text
+    }
+}
 
 pub fn copy_bgra(hwnd: HWND, bgra: &[u8], width: i32, height: i32) -> Result<(), String> {
     // CF_DIB = BITMAPINFOHEADER followed by bottom-up pixel rows.
@@ -36,15 +107,7 @@ pub fn copy_bgra(hwnd: HWND, bgra: &[u8], width: i32, height: i32) -> Result<(),
         }
         let _ = GlobalUnlock(hglobal);
 
-        let mut opened = false;
-        for _ in 0..10 {
-            if OpenClipboard(hwnd).is_ok() {
-                opened = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        if !opened {
+        if !open_with_retry(hwnd) {
             let _ = GlobalFree(hglobal);
             return Err("clipboard is locked by another application".into());
         }

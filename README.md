@@ -38,7 +38,7 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | | |
 |---|---|
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
-| `T` | text — click where it goes, type, `Enter` |
+| `T` | text — click where it goes, type, `Enter`. While typing: `Ctrl+A` select all, `Ctrl+C` / `Ctrl+X` copy / cut, `Ctrl+V` paste |
 | `1`–`8` | colour — **red is the default** |
 | mouse wheel | stroke width / text size |
 | hold `Shift` | perfect square / circle, or snap a line to 45° |

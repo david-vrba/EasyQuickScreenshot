@@ -36,8 +36,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
 
-use crate::annotate::{self, Action, Cell, Rect, Shape, Tool, PALETTE, WIDTHS};
+use crate::annotate::{self, Action, Cell, Rect, Shape, TextInput, Tool, Typing, PALETTE, WIDTHS};
 use crate::capture::Screenshot;
+use crate::clipboard;
 use crate::config::CrosshairStyle;
 
 const CLASS_NAME: PCWSTR = w!("EQS_OVERLAY");
@@ -80,8 +81,9 @@ struct Overlay {
     color: usize,
     stroke: usize,
     keeper: bool,
-    /// Text being typed; committed to `shapes` on Enter or when the mouse does anything else.
-    typing: Option<Shape>,
+    /// Text being typed (the shape that renders it + the editing state); committed to
+    /// `shapes` on Enter or when the mouse does anything else.
+    typing: Option<(Shape, TextInput)>,
     /// A shape or the whole region being dragged by its border, with the last pointer position.
     moving: Option<(Moving, (i32, i32))>,
     /// Set for the final compose: shapes only, no border, guides, or toolbar.
@@ -454,7 +456,7 @@ unsafe fn annotate_proc(
                     let p = clamp_to(state.sel, x, y);
                     let shape = Shape::new(state.tool, PALETTE[state.color], WIDTHS[state.stroke], p);
                     if state.tool == Tool::Text {
-                        state.typing = Some(shape);
+                        state.typing = Some((shape, TextInput::new()));
                     } else {
                         state.active = Some(shape);
                         SetCapture(hwnd);
@@ -512,25 +514,46 @@ unsafe fn annotate_proc(
             LRESULT(0)
         }
         WM_CHAR => {
-            if let Some(t) = state.typing.as_mut() {
+            if let Some((shape, input)) = state.typing.as_mut() {
                 let ch = wparam.0 as u16;
                 if ch == 0x08 {
-                    t.text.pop();
+                    input.backspace();
                 } else if ch >= 0x20 {
-                    t.text.push(ch);
+                    // Control characters (Ctrl+A/C/V/X arrive here as 0x01..) are handled
+                    // in WM_KEYDOWN and must not land in the text.
+                    input.type_char(ch);
                 }
+                shape.text = input.text.clone();
                 let _ = InvalidateRect(hwnd, None, false);
             }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
-            if state.typing.is_some() {
-                // While typing, letters are text — only Enter and Esc mean anything else.
+            if let Some((shape, input)) = state.typing.as_mut() {
+                // While typing, letters are text. Enter/Esc end it; Ctrl+A/C/V/X edit it.
                 if vk == VK_ESCAPE.0 {
                     state.typing = None;
                 } else if vk == VK_RETURN.0 {
                     commit_typing(state);
+                } else if key_down(VK_CONTROL) {
+                    match vk as u8 as char {
+                        'A' => input.select_all(),
+                        'C' => {
+                            let _ = clipboard::copy_text(hwnd, &input.copy());
+                        }
+                        'X' => {
+                            let cut = input.cut();
+                            let _ = clipboard::copy_text(hwnd, &cut);
+                        }
+                        'V' => {
+                            if let Some(clip) = clipboard::read_text(hwnd) {
+                                input.paste(&clip);
+                            }
+                        }
+                        _ => {}
+                    }
+                    shape.text = input.text.clone();
                 }
                 let _ = InvalidateRect(hwnd, None, false);
                 return LRESULT(0);
@@ -601,7 +624,7 @@ unsafe fn move_target(state: &mut Overlay, target: Moving, dx: i32, dy: i32) {
 }
 
 fn commit_typing(state: &mut Overlay) {
-    if let Some(t) = state.typing.take() {
+    if let Some((t, _)) = state.typing.take() {
         if !t.is_degenerate() {
             state.shapes.push(t);
         }
@@ -618,7 +641,7 @@ fn apply(state: &mut Overlay, action: Action) {
             state.done = true;
         }
     }
-    if let Some(t) = state.typing.as_mut() {
+    if let Some((t, _)) = state.typing.as_mut() {
         t.color = PALETTE[state.color];
         t.width = WIDTHS[state.stroke];
     }
@@ -644,7 +667,10 @@ unsafe fn compose(state: &Overlay) {
             state.sel,
             &state.shapes,
             state.active.as_ref(),
-            state.typing.as_ref(),
+            state
+                .typing
+                .as_ref()
+                .map(|(shape, input)| Typing { shape, all_selected: input.all_selected }),
         );
         if state.exporting {
             return; // the output must carry the drawing and nothing else
@@ -776,6 +802,13 @@ pub fn render_test_frame(
             state.dragging = false;
             state.cells = annotate::layout(sel, (shot.width, shot.height));
             state.shapes = demo_shapes(sel);
+            let mut input = TextInput::new();
+            input.paste(&"selected text".encode_utf16().collect::<Vec<u16>>());
+            input.select_all();
+            let mut shape =
+                Shape::new(Tool::Text, PALETTE[4], 4.0, (sel.0 + 24, sel.1 + sel.3 - 60));
+            shape.text = input.text.clone();
+            state.typing = Some((shape, input));
         }
         compose(&state);
 
