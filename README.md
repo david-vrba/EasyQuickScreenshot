@@ -16,18 +16,41 @@ Windows' built-in `Win+Shift+S` is slow to activate, pops a toolbar you didn't a
 
 EasyQuickScreenshot does one thing: **get the pixels you're pointing at into a file and onto your clipboard, instantly.** It sits resident in the tray, so there is zero startup cost when you press the hotkey.
 
-## The two modes
+## The modes
 
 | Hotkey | Mode | What happens |
 |---|---|---|
 | `Ctrl+Alt+Q` | **Quick shot** | Saves to a single fixed file, `shots/temp.png`. The next quick shot **overwrites it**. One file, forever — zero folder bloat. |
 | `Ctrl+Alt+E` | **Easy save** | Saves a timestamped PNG to `shots/saved/` for captures you want to keep. |
+| `Ctrl+Shift+Alt+Q` | **Annotate** | Same drag, then a toolbar appears so you can draw on the shot before it's written. |
 
 Both modes also copy the capture to the clipboard (configurable), so `Ctrl+V` works immediately.
 
 **Q**uick and **E**asy — that's the name.
 
-There's also a third hotkey, `Ctrl+Shift+Alt+E`, that just **opens your saved-screenshots folder** in Explorer — no capture. It always opens wherever your save folder currently points, so it stays correct even after you change the folder in settings.
+There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folder** in Explorer — no capture. It always opens wherever your save folder currently points, so it stays correct even after you change the folder in settings.
+
+## Annotating
+
+`Ctrl+Shift+Alt+Q` captures the same way, but instead of writing the file it holds the frozen
+region and raises a small toolbar under it. Draw, then press `Enter`.
+
+| | |
+|---|---|
+| `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
+| `1`–`8` | colour — **red is the default** |
+| mouse wheel | stroke width |
+| hold `Shift` | perfect square / circle, or snap a line to 45° |
+| `Ctrl+Z` or right-click | undo the last shape |
+| `Enter` | save over `shots/temp.png` |
+| `Shift+Enter` | keep a timestamped copy in `shots/saved/` |
+| `Esc` | cancel the current shape, again to abort |
+
+Every tool is also a button on the toolbar, so you never have to remember a key. Shapes are
+drawn stroke-only — nothing is ever filled in over your screenshot.
+
+It opens **inside the capture overlay**: no second window, no app launch, nothing to wait for.
+A plain `Ctrl+Alt+Q` is untouched and never shows the toolbar.
 
 ### Why a fixed temp file is a superpower
 
@@ -77,7 +100,7 @@ pwsh scripts/autostart.ps1 -Remove  # unregister
 2. Drag a rectangle. The border and guides invert the pixels beneath them, so they're visible on any background, with live pixel dimensions below the selection.
 3. Release. The PNG is written and copied. No confirmation, no flash, no sound — check the tray tooltip if you forget your keys.
 
-**Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
+Annotating adds one step: draw, then `Enter`. **Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
 
 ## Settings & gallery (optional)
 
@@ -97,6 +120,7 @@ Put `eqs-settings.exe` next to `eqs.exe` and open it from the tray → *Settings
 quick_hotkey  = "ctrl+alt+q"        # modifiers: ctrl, alt, shift, win
 save_hotkey   = "ctrl+alt+e"        # keys: a-z, 0-9, f1-f24, printscreen, space
 folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
+annotate_hotkey = "ctrl+shift+alt+q"  # capture, then draw on it before saving
 shots_dir     = "shots"             # relative paths resolve against this file's folder
 temp_file    = "temp.png"
 copy_to_clipboard = true

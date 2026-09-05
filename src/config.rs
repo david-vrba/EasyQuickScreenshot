@@ -21,6 +21,10 @@ save_hotkey = "ctrl+alt+e"
 # Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
 folder_hotkey = "ctrl+shift+alt+e"
 
+# Annotate: same crosshair drag, then a toolbar to draw on the shot before it is written.
+# Enter saves over the temp file, Shift+Enter keeps a timestamped copy.
+annotate_hotkey = "ctrl+shift+alt+q"
+
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
 
@@ -42,6 +46,7 @@ pub struct RawConfig {
     pub quick_hotkey: String,
     pub save_hotkey: String,
     pub folder_hotkey: String,
+    pub annotate_hotkey: String,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -54,6 +59,7 @@ impl Default for RawConfig {
             quick_hotkey: "ctrl+alt+q".into(),
             save_hotkey: "ctrl+alt+e".into(),
             folder_hotkey: "ctrl+shift+alt+e".into(),
+            annotate_hotkey: "ctrl+shift+alt+q".into(),
             shots_dir: "shots".into(),
             temp_file: "temp.png".into(),
             copy_to_clipboard: true,
@@ -80,9 +86,11 @@ pub struct Config {
     pub quick_hotkey: Hotkey,
     pub save_hotkey: Hotkey,
     pub folder_hotkey: Hotkey,
+    pub annotate_hotkey: Hotkey,
     pub quick_hotkey_label: String,
     pub save_hotkey_label: String,
     pub folder_hotkey_label: String,
+    pub annotate_hotkey_label: String,
     pub shots_dir: PathBuf,
     pub temp_path: PathBuf,
     pub saved_dir: PathBuf,
@@ -142,9 +150,12 @@ pub fn load(cli_override: Option<&str>) -> Result<Config, String> {
             .ok_or(format!("invalid save_hotkey: \"{}\"", raw.save_hotkey))?,
         folder_hotkey: parse_hotkey(&raw.folder_hotkey)
             .ok_or(format!("invalid folder_hotkey: \"{}\"", raw.folder_hotkey))?,
+        annotate_hotkey: parse_hotkey(&raw.annotate_hotkey)
+            .ok_or(format!("invalid annotate_hotkey: \"{}\"", raw.annotate_hotkey))?,
         quick_hotkey_label: raw.quick_hotkey,
         save_hotkey_label: raw.save_hotkey,
         folder_hotkey_label: raw.folder_hotkey,
+        annotate_hotkey_label: raw.annotate_hotkey,
         temp_path: shots_dir.join(&raw.temp_file),
         saved_dir: shots_dir.join("saved"),
         shots_dir,

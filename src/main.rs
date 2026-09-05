@@ -3,6 +3,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod annotate;
 mod capture;
 mod clipboard;
 mod config;
@@ -34,6 +35,7 @@ use crate::config::Config;
 const HOTKEY_QUICK: i32 = 1;
 const HOTKEY_SAVE: i32 = 2;
 const HOTKEY_FOLDER: i32 = 3;
+const HOTKEY_ANNOTATE: i32 = 4;
 
 /// Blocks re-entrant captures if a hotkey fires while the overlay is already open.
 static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
@@ -114,8 +116,8 @@ fn main() {
         tray::add_icon(
             hwnd,
             &format!(
-                "EasyQuickScreenshot — {} quick / {} save",
-                cfg.quick_hotkey_label, cfg.save_hotkey_label
+                "EasyQuickScreenshot — {} quick / {} save / {} annotate",
+                cfg.quick_hotkey_label, cfg.save_hotkey_label, cfg.annotate_hotkey_label
             ),
         );
         register_hotkeys(hwnd, cfg);
@@ -149,6 +151,16 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
     {
         failed.push(cfg.folder_hotkey_label.clone());
     }
+    if RegisterHotKey(
+        hwnd,
+        HOTKEY_ANNOTATE,
+        cfg.annotate_hotkey.modifiers,
+        cfg.annotate_hotkey.vk,
+    )
+    .is_err()
+    {
+        failed.push(cfg.annotate_hotkey_label.clone());
+    }
     if !failed.is_empty() {
         message_box(
             &format!(
@@ -165,6 +177,7 @@ unsafe fn unregister_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(hwnd, HOTKEY_QUICK);
     let _ = UnregisterHotKey(hwnd, HOTKEY_SAVE);
     let _ = UnregisterHotKey(hwnd, HOTKEY_FOLDER);
+    let _ = UnregisterHotKey(hwnd, HOTKEY_ANNOTATE);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -181,7 +194,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 // Not a capture — just reveal the current save folder. Reads the live
                 // config, so it always opens wherever shots_dir points right now.
                 open_in_explorer(&app.config.saved_dir);
-            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE)
+            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE || id == HOTKEY_ANNOTATE)
                 && IN_CAPTURE
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
@@ -237,17 +250,26 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
             return;
         }
     };
-    let Some((x, y, w, h)) = overlay::select_region(&shot, app.config.crosshair_style) else {
+    let annotating = hotkey_id == HOTKEY_ANNOTATE;
+    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, annotating) else {
         return; // cancelled
     };
-    let Some((bgra, cw, ch)) = shot.crop(x, y, w, h) else {
+    let (x, y, w, h) = sel.rect;
+    // An annotated capture arrives already flattened; a plain one crops the untouched buffer.
+    let Some((bgra, cw, ch)) = (match sel.pixels {
+        Some(pixels) => Some((pixels, w, h)),
+        None => shot.crop(x, y, w, h),
+    }) else {
         return;
     };
 
-    let path = if hotkey_id == HOTKEY_QUICK {
-        app.config.temp_path.clone()
-    } else {
+    // Annotating picks its destination at commit time: Enter overwrites the temp file,
+    // Shift+Enter (or the KEEP button) files a timestamped copy.
+    let keep = if annotating { sel.keeper } else { hotkey_id == HOTKEY_SAVE };
+    let path = if keep {
         save::timestamped_path(&app.config.saved_dir)
+    } else {
+        app.config.temp_path.clone()
     };
     if let Err(e) = save::write_png_atomic(&path, &bgra, cw, ch) {
         message_box(&format!("Could not save screenshot:\n{}", e), MB_ICONERROR);
@@ -350,7 +372,7 @@ fn headless_shoot(rest: &[String]) -> i32 {
     }
 }
 
-/// eqs --render-test SX SY W H (lines|cursor) out.png — draws one overlay frame (as if
+/// eqs --render-test SX SY W H (lines|cursor) out.png [annotate|export] — draws one overlay frame (as if
 /// dragging from (SX,SY) to (SX+W,SY+H), in output-image/buffer coordinates — NOT
 /// virtual-screen coordinates, since the output PNG IS the buffer) over a real capture,
 /// with no window at all.
@@ -375,7 +397,22 @@ fn headless_render_test(rest: &[String]) -> i32 {
     };
     let start = (x, y);
     let cur = (x + w, y + h);
-    let Ok(bgra) = overlay::render_test_frame(&shot, style, start, cur) else {
+    // `export` runs the real commit path instead of a preview frame, so the flattened
+    // output can be checked without driving the UI.
+    if rest.get(6).map(|s| s == "export").unwrap_or(false) {
+        let Ok(shot) = capture::capture_virtual_screen() else {
+            return 3;
+        };
+        let Ok((bgra, cw, ch)) = overlay::export_test(&shot, (x, y), (x + w, y + h)) else {
+            return 4;
+        };
+        return match save::write_png_atomic(std::path::Path::new(&rest[5]), &bgra, cw, ch) {
+            Ok(()) => 0,
+            Err(_) => 5,
+        };
+    }
+    let demo = rest.get(6).map(|s| s == "annotate").unwrap_or(false);
+    let Ok(bgra) = overlay::render_test_frame(&shot, style, start, cur, demo) else {
         return 4;
     };
     match save::write_png_atomic(std::path::Path::new(&rest[5]), &bgra, shot.width, shot.height) {

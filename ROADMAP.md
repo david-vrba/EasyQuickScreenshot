@@ -6,6 +6,8 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 ## Shipped
 - Instant region capture (hotkey → crosshair → drag → PNG on disk + clipboard)
 - Two modes: quick (fixed `temp.png`) and save (timestamped)
+- `Ctrl+Shift+Alt+Q` — annotate: rectangle, arrow, line, circle and pen drawn right in the
+  capture overlay (no second window), red by default, `Enter` saves / `Shift+Enter` keeps
 - `Ctrl+Shift+Alt+E` — open the current save folder
 - No dimming, no flash, no shutter; overlay can't leak into the shot
 - Multi-monitor + mixed-DPI selection
@@ -13,12 +15,12 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 - One-line PowerShell installer
 
 ## Next
-- Tagged **v0.2.0** release with a downloadable build
-- **winget** and **Scoop** packages (`winget install …`, `scoop install …`)
 - A short demo GIF in the README
+- **winget** package (Scoop is live; the winget PR is in Microsoft's review queue)
+- Annotate: undo/redo beyond one step, remember the last colour and width between captures
 
 ## Considered (not committed — feedback wanted)
-- Light in-app annotation (arrow / box / blur) before saving
+- A full editor window: crop, re-select and move shapes after drawing, text, blur redaction
 - Configurable output format (e.g. JPG/WebP) and filename pattern
 - A "copy last capture's file path" hotkey
 - Single-instance guard for the settings window

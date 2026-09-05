@@ -20,6 +20,10 @@ save_hotkey = "ctrl+alt+e"
 # Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
 folder_hotkey = "ctrl+shift+alt+e"
 
+# Annotate: same crosshair drag, then a toolbar to draw on the shot before it is written.
+# Enter saves over the temp file, Shift+Enter keeps a timestamped copy.
+annotate_hotkey = "ctrl+shift+alt+q"
+
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
 
@@ -40,6 +44,7 @@ pub struct ConfigDto {
     pub quick_hotkey: String,
     pub save_hotkey: String,
     pub folder_hotkey: String,
+    pub annotate_hotkey: String,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -121,6 +126,7 @@ pub fn load() -> ConfigDto {
         quick_hotkey: str_field(&doc, "quick_hotkey", "ctrl+alt+q"),
         save_hotkey: str_field(&doc, "save_hotkey", "ctrl+alt+e"),
         folder_hotkey: str_field(&doc, "folder_hotkey", "ctrl+shift+alt+e"),
+        annotate_hotkey: str_field(&doc, "annotate_hotkey", "ctrl+shift+alt+q"),
         shots_dir,
         temp_file,
         copy_to_clipboard: doc
@@ -146,6 +152,7 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
     doc["quick_hotkey"] = value(dto.quick_hotkey.trim());
     doc["save_hotkey"] = value(dto.save_hotkey.trim());
     doc["folder_hotkey"] = value(dto.folder_hotkey.trim());
+    doc["annotate_hotkey"] = value(dto.annotate_hotkey.trim());
     doc["shots_dir"] = value(dto.shots_dir.trim());
     doc["temp_file"] = value(dto.temp_file.trim());
     doc["copy_to_clipboard"] = value(dto.copy_to_clipboard);
@@ -159,9 +166,15 @@ fn validate(dto: &ConfigDto) -> Result<(), String> {
     validate_hotkey(&dto.quick_hotkey).map_err(|e| format!("Quick-shot hotkey: {e}"))?;
     validate_hotkey(&dto.save_hotkey).map_err(|e| format!("Save hotkey: {e}"))?;
     validate_hotkey(&dto.folder_hotkey).map_err(|e| format!("Open-folder hotkey: {e}"))?;
-    let (q, s, f) = (dto.quick_hotkey.trim(), dto.save_hotkey.trim(), dto.folder_hotkey.trim());
-    if q.eq_ignore_ascii_case(s) || q.eq_ignore_ascii_case(f) || s.eq_ignore_ascii_case(f) {
-        return Err("All three hotkeys must be different.".into());
+    validate_hotkey(&dto.annotate_hotkey).map_err(|e| format!("Annotate hotkey: {e}"))?;
+    let keys = [
+        dto.quick_hotkey.trim(),
+        dto.save_hotkey.trim(),
+        dto.folder_hotkey.trim(),
+        dto.annotate_hotkey.trim(),
+    ];
+    if (0..keys.len()).any(|i| keys[i + 1..].iter().any(|k| k.eq_ignore_ascii_case(keys[i]))) {
+        return Err("Every hotkey must be different.".into());
     }
     if dto.temp_file.trim().is_empty() {
         return Err("Temp file name can't be empty.".into());
