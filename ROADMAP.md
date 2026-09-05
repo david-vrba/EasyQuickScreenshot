@@ -6,8 +6,9 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 ## Shipped
 - Instant region capture (hotkey → crosshair → drag → PNG on disk + clipboard)
 - Two modes: quick (fixed `temp.png`) and save (timestamped)
-- `Ctrl+Shift+Alt+Q` — annotate: rectangle, arrow, line, circle and pen drawn right in the
-  capture overlay (no second window), red by default, `Enter` saves / `Shift+Enter` keeps
+- `Ctrl+Shift+Alt+Q` — annotate: rectangle, arrow, line, circle, pen and text drawn right in
+  the capture overlay (no second window), red by default; drag any shape or the whole region
+  by its border; `Enter` = quick, `Shift+Enter` = save
 - `Ctrl+Shift+Alt+E` — open the current save folder
 - No dimming, no flash, no shutter; overlay can't leak into the shot
 - Multi-monitor + mixed-DPI selection
@@ -17,10 +18,10 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 ## Next
 - A short demo GIF in the README
 - **winget** package (Scoop is live; the winget PR is in Microsoft's review queue)
-- Annotate: undo/redo beyond one step, remember the last colour and width between captures
+- Annotate: resize handles, redo, remember the last colour and width between captures
 
 ## Considered (not committed — feedback wanted)
-- A full editor window: crop, re-select and move shapes after drawing, text, blur redaction
+- A full editor window: re-crop saved shots, resize handles, blur redaction
 - Configurable output format (e.g. JPG/WebP) and filename pattern
 - A "copy last capture's file path" hotkey
 - Single-instance guard for the settings window

@@ -12,11 +12,12 @@
 use std::ffi::c_void;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
     DeleteObject, EndPaint, GetDC, GetDIBits, GetStockObject, InvalidateRect, LineTo, MoveToEx,
-    Rectangle, ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW, BITMAPINFO,
+    Rectangle, ReleaseDC, ScreenToClient, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW,
+    BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
     PAINTSTRUCT, R2_COPYPEN, R2_NOT, SRCCOPY, TRANSPARENT, WHITE_PEN,
 };
@@ -27,15 +28,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow,
-    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_CROSS,
-    MSG, SW_SHOW, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_QUIT, WM_RBUTTONDOWN, WM_SETCURSOR,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_ARROW,
+    IDC_CROSS, IDC_SIZEALL, MSG, SW_SHOW, WM_CHAR, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_QUIT,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
 
-use crate::annotate::{self, Action, Cell, Shape, Tool, PALETTE, WIDTHS};
+use crate::annotate::{self, Action, Cell, Rect, Shape, Tool, PALETTE, WIDTHS};
 use crate::capture::Screenshot;
 use crate::config::CrosshairStyle;
 
@@ -79,8 +80,18 @@ struct Overlay {
     color: usize,
     stroke: usize,
     keeper: bool,
+    /// Text being typed; committed to `shapes` on Enter or when the mouse does anything else.
+    typing: Option<Shape>,
+    /// A shape or the whole region being dragged by its border, with the last pointer position.
+    moving: Option<(Moving, (i32, i32))>,
     /// Set for the final compose: shapes only, no border, guides, or toolbar.
     exporting: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Moving {
+    Shape(usize),
+    Region,
 }
 
 /// Show the selection UI over the frozen screenshot.
@@ -135,6 +146,8 @@ pub fn select_region(
             color: 0,
             stroke: 1,
             keeper: false,
+            typing: None,
+            moving: None,
             exporting: false,
         }));
 
@@ -412,29 +425,52 @@ unsafe fn annotate_proc(
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
+        WM_SETCURSOR => {
+            let (x, y) = cursor_in_client(hwnd);
+            let cursor = if annotate::over_bar(&state.cells, x, y) {
+                IDC_ARROW
+            } else if state.moving.is_some() || grab_target(state, x, y).is_some() {
+                IDC_SIZEALL
+            } else {
+                IDC_CROSS
+            };
+            SetCursor(LoadCursorW(None, cursor).unwrap_or_default());
+            LRESULT(1)
+        }
         WM_LBUTTONDOWN => {
             let (x, y) = lparam_xy(lparam);
             if let Some(action) = annotate::hit_test(&state.cells, x, y) {
+                commit_typing(state);
                 apply(state, action);
                 if state.done {
                     return LRESULT(0);
                 }
             } else if !annotate::over_bar(&state.cells, x, y) {
-                let p = clamp_to(state.sel, x, y);
-                state.active = Some(Shape {
-                    tool: state.tool,
-                    color: PALETTE[state.color],
-                    width: WIDTHS[state.stroke],
-                    pts: vec![p, p],
-                });
-                SetCapture(hwnd);
+                commit_typing(state);
+                if let Some(target) = grab_target(state, x, y) {
+                    state.moving = Some((target, (x, y)));
+                    SetCapture(hwnd);
+                } else {
+                    let p = clamp_to(state.sel, x, y);
+                    let shape = Shape::new(state.tool, PALETTE[state.color], WIDTHS[state.stroke], p);
+                    if state.tool == Tool::Text {
+                        state.typing = Some(shape);
+                    } else {
+                        state.active = Some(shape);
+                        SetCapture(hwnd);
+                    }
+                }
             }
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            if let Some(shape) = state.active.as_mut() {
-                let (x, y) = lparam_xy(lparam);
+            let (x, y) = lparam_xy(lparam);
+            if let Some((target, last)) = state.moving {
+                move_target(state, target, x - last.0, y - last.1);
+                state.moving = Some((target, (x, y)));
+                let _ = InvalidateRect(hwnd, None, false);
+            } else if let Some(shape) = state.active.as_mut() {
                 let (cx, cy) = clamp_to(state.sel, x, y);
                 shape.drag_to(cx, cy, key_down(VK_SHIFT));
                 // A Shift-constrained endpoint can land outside the region; pull it back so
@@ -448,6 +484,7 @@ unsafe fn annotate_proc(
         }
         WM_LBUTTONUP => {
             let _ = ReleaseCapture();
+            state.moving = None;
             if let Some(shape) = state.active.take() {
                 if !shape.is_degenerate() {
                     state.shapes.push(shape);
@@ -457,23 +494,47 @@ unsafe fn annotate_proc(
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
-            // Layout-independent width control — [ and ] sit on different physical keys
+            // Layout-independent size control — [ and ] sit on different physical keys
             // across layouts, the wheel does not.
             let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16;
             let next = state.stroke as i32 + if delta > 0 { 1 } else { -1 };
-            state.stroke = next.clamp(0, WIDTHS.len() as i32 - 1) as usize;
+            apply(state, Action::Width(next.clamp(0, WIDTHS.len() as i32 - 1) as usize));
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
             // Mouse-only undo; matches the right-click-cancels reflex from phase one.
-            state.active = None;
-            state.shapes.pop();
+            if state.typing.take().is_none() {
+                state.active = None;
+                state.shapes.pop();
+            }
             let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        WM_CHAR => {
+            if let Some(t) = state.typing.as_mut() {
+                let ch = wparam.0 as u16;
+                if ch == 0x08 {
+                    t.text.pop();
+                } else if ch >= 0x20 {
+                    t.text.push(ch);
+                }
+                let _ = InvalidateRect(hwnd, None, false);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
+            if state.typing.is_some() {
+                // While typing, letters are text — only Enter and Esc mean anything else.
+                if vk == VK_ESCAPE.0 {
+                    state.typing = None;
+                } else if vk == VK_RETURN.0 {
+                    commit_typing(state);
+                }
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
             let ctrl = key_down(VK_CONTROL);
             if vk == VK_ESCAPE.0 {
                 if state.active.take().is_none() {
@@ -497,6 +558,56 @@ unsafe fn annotate_proc(
     }
 }
 
+unsafe fn cursor_in_client(hwnd: HWND) -> (i32, i32) {
+    let mut p = POINT::default();
+    let _ = GetCursorPos(&mut p);
+    let _ = ScreenToClient(hwnd, &mut p);
+    (p.x, p.y)
+}
+
+/// What a press at (x, y) would drag: the topmost shape whose outline is under the pointer,
+/// else the region border, else nothing.
+unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Moving> {
+    if let Some(i) = state.shapes.iter().rposition(|s| s.hits_border(x, y)) {
+        return Some(Moving::Shape(i));
+    }
+    if annotate::hits_rect_border(state.sel, x, y) {
+        return Some(Moving::Region);
+    }
+    None
+}
+
+unsafe fn move_target(state: &mut Overlay, target: Moving, dx: i32, dy: i32) {
+    match target {
+        Moving::Region => {
+            let (sx, sy, sw, sh) = state.sel;
+            let nx = (sx + dx).clamp(0, (state.width - sw).max(0));
+            let ny = (sy + dy).clamp(0, (state.height - sh).max(0));
+            state.sel = (nx, ny, sw, sh);
+            state.result = Some(state.sel);
+            state.cells = annotate::layout(state.sel, (state.width, state.height));
+        }
+        Moving::Shape(i) => {
+            let Some(shape) = state.shapes.get_mut(i) else { return };
+            let (x0, y0, x1, y1) = shape.bounds();
+            let (sx, sy, sw, sh) = state.sel;
+            // Keep the whole shape inside the region; a shape wider than the region just
+            // stays put on that axis.
+            let dx = if x1 - x0 <= sw { dx.clamp(sx - x0, sx + sw - x1) } else { 0 };
+            let dy = if y1 - y0 <= sh { dy.clamp(sy - y0, sy + sh - y1) } else { 0 };
+            shape.move_by(dx, dy);
+        }
+    }
+}
+
+fn commit_typing(state: &mut Overlay) {
+    if let Some(t) = state.typing.take() {
+        if !t.is_degenerate() {
+            state.shapes.push(t);
+        }
+    }
+}
+
 fn apply(state: &mut Overlay, action: Action) {
     match action {
         Action::Pick(t) => state.tool = t,
@@ -506,6 +617,10 @@ fn apply(state: &mut Overlay, action: Action) {
             state.keeper = keeper;
             state.done = true;
         }
+    }
+    if let Some(t) = state.typing.as_mut() {
+        t.color = PALETTE[state.color];
+        t.width = WIDTHS[state.stroke];
     }
 }
 
@@ -524,7 +639,13 @@ unsafe fn compose(state: &Overlay) {
     let _ = BitBlt(back, 0, 0, w, h, state.bright_dc, 0, 0, SRCCOPY);
 
     if state.phase == Phase::Annotate {
-        annotate::draw_shapes(back, &state.shapes, state.active.as_ref());
+        annotate::draw_shapes(
+            back,
+            state.sel,
+            &state.shapes,
+            state.active.as_ref(),
+            state.typing.as_ref(),
+        );
         if state.exporting {
             return; // the output must carry the drawing and nothing else
         }
@@ -644,6 +765,8 @@ pub fn render_test_frame(
             color: 0,
             stroke: 1,
             keeper: false,
+            typing: None,
+            moving: None,
             exporting: false,
         };
 
@@ -737,6 +860,8 @@ pub fn export_test(
             color: 0,
             stroke: 1,
             keeper: false,
+            typing: None,
+            moving: None,
             exporting: false,
         };
         let pixels = export_annotated(&mut state);
@@ -754,24 +879,29 @@ pub fn export_test(
     }
 }
 
-fn demo_shapes((sx, sy, sw, sh): (i32, i32, i32, i32)) -> Vec<Shape> {
-    let cell = sw / 5;
+fn demo_shapes((sx, sy, sw, sh): Rect) -> Vec<Shape> {
+    let cell = sw / 6;
     let (top, bot) = (sy + sh / 4, sy + sh * 3 / 4);
     let at = |i: i32| sx + cell * i + cell / 6;
     let to = |i: i32| sx + cell * (i + 1) - cell / 6;
+    let two = |tool, color, i: i32, a: i32, b: i32| {
+        let mut s = Shape::new(tool, color, 4.0, (at(i), a));
+        s.pts[1] = (to(i), b);
+        s
+    };
+    let mut pen = Shape::new(Tool::Pen, PALETTE[2], 4.0, (at(4), top));
+    pen.pts = (0..12)
+        .map(|i| (at(4) + i * (to(4) - at(4)) / 11, if i % 2 == 0 { top } else { bot }))
+        .collect();
+    let mut text = Shape::new(Tool::Text, PALETTE[0], 4.0, (at(5), top));
+    text.text = "Ducky!".encode_utf16().collect();
     vec![
-        Shape { tool: Tool::Rect, color: PALETTE[0], width: 4.0, pts: vec![(at(0), top), (to(0), bot)] },
-        Shape { tool: Tool::Arrow, color: PALETTE[0], width: 4.0, pts: vec![(at(1), bot), (to(1), top)] },
-        Shape { tool: Tool::Line, color: PALETTE[4], width: 4.0, pts: vec![(at(2), bot), (to(2), top)] },
-        Shape { tool: Tool::Circle, color: PALETTE[3], width: 4.0, pts: vec![(at(3), top), (to(3), bot)] },
-        Shape {
-            tool: Tool::Pen,
-            color: PALETTE[2],
-            width: 4.0,
-            pts: (0..12)
-                .map(|i| (at(4) + i * (to(4) - at(4)) / 11, if i % 2 == 0 { top } else { bot }))
-                .collect(),
-        },
+        two(Tool::Rect, PALETTE[0], 0, top, bot),
+        two(Tool::Arrow, PALETTE[0], 1, bot, top),
+        two(Tool::Line, PALETTE[4], 2, bot, top),
+        two(Tool::Circle, PALETTE[3], 3, top, bot),
+        pen,
+        text,
     ]
 }
 

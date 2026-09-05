@@ -38,16 +38,20 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | | |
 |---|---|
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
+| `T` | text — click where it goes, type, `Enter` |
 | `1`–`8` | colour — **red is the default** |
-| mouse wheel | stroke width |
+| mouse wheel | stroke width / text size |
 | hold `Shift` | perfect square / circle, or snap a line to 45° |
+| drag a border | move a shape by its outline, or move the whole region by its edge |
 | `Ctrl+Z` or right-click | undo the last shape |
-| `Enter` | save over `shots/temp.png` |
-| `Shift+Enter` | keep a timestamped copy in `shots/saved/` |
+| `Enter` or **QUICK** | write `shots/temp.png` — same as a quick shot |
+| `Shift+Enter` or **SAVE** | write a timestamped copy in `shots/saved/` — same as a save |
 | `Esc` | cancel the current shape, again to abort |
 
 Every tool is also a button on the toolbar, so you never have to remember a key. Shapes are
-drawn stroke-only — nothing is ever filled in over your screenshot.
+drawn stroke-only — nothing is ever filled in over your screenshot. Hover a drawn shape's
+outline and the cursor turns into a move cursor; drag to reposition it. The same works on the
+region's own border, so you can slide the whole capture area after the fact.
 
 It opens **inside the capture overlay**: no second window, no app launch, nothing to wait for.
 A plain `Ctrl+Alt+Q` is untouched and never shows the toolbar.

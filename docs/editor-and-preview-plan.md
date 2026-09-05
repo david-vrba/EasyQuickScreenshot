@@ -1,7 +1,16 @@
 # EasyQuickScreenshot — Annotation & Capture-FX plan
 
-Status: **Epic 1 BUILT 2026-08-31.** Epics 2–3 are still design only.
-Owner: David. Drafted 2026-07-09 · Rev 2 2026-07-27 (quick-annotate flow) · **Rev 3 2026-08-31 (Epic 1 shipped)**.
+Status: **Epic 1 BUILT 2026-08-31, extended 2026-09-05.** Epics 2–3 are still design only.
+Owner: David. Drafted 2026-07-09 · Rev 2 2026-07-27 (quick-annotate flow) · Rev 3 2026-08-31 (Epic 1 shipped) · **Rev 4 2026-09-05 (text + move added)**.
+
+> **Rev 4 — David overruled two Rev-2 decisions, and he was right:**
+> - **Text is in Tier 1.** "The main point was that I can write there a text." `T` tool, GDI
+>   text, size follows the wheel. Rev 2 had parked it for Tier 2.
+> - **Shapes and the region are movable.** Hover a shape's outline (or the region's edge) →
+>   move cursor → drag. Rev 2's "draw-and-go, no handles" line held for *resizing* only.
+>   Still no resize handles — that stays Tier 2.
+> - Buttons renamed **QUICK / SAVE** to match the two capture modes David already knows.
+> - Drawing is now hard-clipped to the region, so preview = export always.
 
 > **What actually got built** — `src/annotate.rs` + the annotate phase in `src/overlay.rs`.
 > Matches this plan except where reality was simpler or better:

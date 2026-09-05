@@ -1,20 +1,27 @@
 // Quick-annotate layer: shape model, GDI+ rendering, and the floating toolbar.
 // Lives inside the capture overlay — no extra window, no second process. GDI+ is used
 // (not plain GDI) purely for anti-aliasing and round caps; it is started lazily so the
-// plain capture path never pays for it.
+// plain capture path never pays for it. Text goes through GDI in a second pass, which
+// is why text always paints above the shapes.
 
-use windows::Win32::Foundation::COLORREF;
+use windows::core::w;
+use windows::Win32::Foundation::{COLORREF, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    GetStockObject, SetBkMode, SetTextColor, TextOutW, DEFAULT_GUI_FONT, HDC, SelectObject,
-    TRANSPARENT,
+    CreateFontW, CreateRectRgn, DeleteObject, GetStockObject, GetTextExtentPoint32W,
+    SelectClipRgn, SelectObject, SetBkMode, SetTextColor, TextOutW, CLEARTYPE_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FW_BOLD, HDC, HFONT,
+    OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics,
-    GdipDeletePen, GdipDrawCurveI, GdipDrawEllipseI, GdipDrawLineI, GdipDrawLinesI,
-    GdipDrawRectangleI, GdipFillPolygonI, GdipFillRectangleI, GdipSetPenEndCap, GdipSetPenLineJoin,
-    GdipSetPenStartCap, GdipSetSmoothingMode, GdiplusStartup, FillModeAlternate, GdiplusStartupInput,
-    GpBrush, GpGraphics, GpPen, LineCapRound, LineJoinRound, Point, SmoothingModeAntiAlias, UnitPixel,
+    CombineModeReplace, FillModeAlternate, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill,
+    GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen, GdipDrawCurveI, GdipDrawEllipseI,
+    GdipDrawLineI, GdipDrawLinesI, GdipDrawRectangleI, GdipFillPolygonI, GdipFillRectangleI,
+    GdipSetClipRectI, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
+    GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPen,
+    LineCapRound, LineJoinRound, Point, SmoothingModeAntiAlias, UnitPixel,
 };
+
+pub type Rect = (i32, i32, i32, i32);
 
 /// Stroke colours, ARGB. Index 0 (red) is the default and never moves.
 pub const PALETTE: [u32; 8] = [
@@ -29,6 +36,9 @@ pub const PALETTE: [u32; 8] = [
 ];
 pub const WIDTHS: [f32; 3] = [2.0, 4.0, 6.0];
 
+/// How close (px) the pointer must be to a border to grab it for moving.
+pub const GRAB_TOLERANCE: i32 = 7;
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tool {
     Rect,
@@ -36,28 +46,47 @@ pub enum Tool {
     Line,
     Circle,
     Pen,
+    Text,
 }
 
-const TOOLS: [Tool; 5] = [Tool::Rect, Tool::Arrow, Tool::Line, Tool::Circle, Tool::Pen];
+const TOOLS: [Tool; 6] = [
+    Tool::Rect,
+    Tool::Arrow,
+    Tool::Line,
+    Tool::Circle,
+    Tool::Pen,
+    Tool::Text,
+];
 
 #[derive(Clone)]
 pub struct Shape {
     pub tool: Tool,
     pub color: u32,
     pub width: f32,
-    /// Two points for every tool except Pen, which stores the whole freehand trail.
+    /// Two points for every tool except Pen (the whole trail) and Text (one anchor).
     pub pts: Vec<(i32, i32)>,
+    /// UTF-16 so it can go straight to TextOutW. Empty for everything but Text.
+    pub text: Vec<u16>,
 }
 
 impl Shape {
+    pub fn new(tool: Tool, color: u32, width: f32, at: (i32, i32)) -> Shape {
+        let pts = if tool == Tool::Text { vec![at] } else { vec![at, at] };
+        Shape { tool, color, width, pts, text: Vec::new() }
+    }
+
     /// Re-point the shape being dragged. `constrain` is Shift: square, circle, or 45°.
     pub fn drag_to(&mut self, x: i32, y: i32, constrain: bool) {
-        if self.tool == Tool::Pen {
-            // Skip sub-pixel jitter so a long stroke stays a short point list.
-            if self.pts.last().is_none_or(|p| (p.0 - x).abs() + (p.1 - y).abs() >= 2) {
-                self.pts.push((x, y));
+        match self.tool {
+            Tool::Text => return,
+            Tool::Pen => {
+                // Skip sub-pixel jitter so a long stroke stays a short point list.
+                if self.pts.last().is_none_or(|p| (p.0 - x).abs() + (p.1 - y).abs() >= 2) {
+                    self.pts.push((x, y));
+                }
+                return;
             }
-            return;
+            _ => {}
         }
         let a = self.pts[0];
         let (mut dx, mut dy) = (x - a.0, y - a.1);
@@ -81,9 +110,10 @@ impl Shape {
         self.pts[1] = (a.0 + dx, a.1 + dy);
     }
 
-    /// A click that never became a drag leaves nothing worth keeping.
+    /// A click that never became a drag (or text nobody typed) leaves nothing worth keeping.
     pub fn is_degenerate(&self) -> bool {
         match self.tool {
+            Tool::Text => self.text.is_empty(),
             Tool::Pen => self.pts.len() < 2,
             _ => {
                 let (a, b) = (self.pts[0], self.pts[1]);
@@ -91,6 +121,162 @@ impl Shape {
             }
         }
     }
+
+    pub fn move_by(&mut self, dx: i32, dy: i32) {
+        for p in &mut self.pts {
+            p.0 += dx;
+            p.1 += dy;
+        }
+    }
+
+    /// Axis-aligned bounds as (x0, y0, x1, y1), exclusive on the far side.
+    pub unsafe fn bounds(&self) -> (i32, i32, i32, i32) {
+        if self.tool == Tool::Text {
+            let (w, h) = text_extent(&self.text, self.width);
+            let a = self.pts[0];
+            return (a.0, a.1, a.0 + w, a.1 + h);
+        }
+        let x0 = self.pts.iter().map(|p| p.0).min().unwrap_or(0);
+        let y0 = self.pts.iter().map(|p| p.1).min().unwrap_or(0);
+        let x1 = self.pts.iter().map(|p| p.0).max().unwrap_or(0);
+        let y1 = self.pts.iter().map(|p| p.1).max().unwrap_or(0);
+        (x0, y0, x1 + 1, y1 + 1)
+    }
+
+    /// Is the pointer on this shape's outline (or on the text box)? This is the grab test
+    /// for moving, so it deliberately ignores the hollow interior of rectangles and circles.
+    pub unsafe fn hits_border(&self, x: i32, y: i32) -> bool {
+        let tol = (GRAB_TOLERANCE as f64).max(self.width as f64);
+        match self.tool {
+            Tool::Text => {
+                let (x0, y0, x1, y1) = self.bounds();
+                x >= x0 - 2 && x < x1 + 2 && y >= y0 - 2 && y < y1 + 2
+            }
+            Tool::Line | Tool::Arrow => segment_distance(self.pts[0], self.pts[1], (x, y)) <= tol,
+            Tool::Pen => self
+                .pts
+                .windows(2)
+                .any(|w| segment_distance(w[0], w[1], (x, y)) <= tol),
+            Tool::Rect => {
+                let (rx, ry, rw, rh) = bounds_of(self.pts[0], self.pts[1]);
+                let corners = [(rx, ry), (rx + rw, ry), (rx + rw, ry + rh), (rx, ry + rh)];
+                (0..4).any(|i| segment_distance(corners[i], corners[(i + 1) % 4], (x, y)) <= tol)
+            }
+            Tool::Circle => {
+                let (rx, ry, rw, rh) = bounds_of(self.pts[0], self.pts[1]);
+                let (a, b) = ((rw as f64 / 2.0).max(1.0), (rh as f64 / 2.0).max(1.0));
+                let (cx, cy) = (rx as f64 + a, ry as f64 + b);
+                // Normalised radial distance: 1.0 is exactly on the ellipse. Scaled back by the
+                // smaller radius so the tolerance is roughly in pixels.
+                let r = (((x as f64 - cx) / a).powi(2) + ((y as f64 - cy) / b).powi(2)).sqrt();
+                (r - 1.0).abs() * a.min(b) <= tol
+            }
+        }
+    }
+}
+
+fn segment_distance(a: (i32, i32), b: (i32, i32), p: (i32, i32)) -> f64 {
+    let (ax, ay, bx, by, px, py) =
+        (a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64, p.0 as f64, p.1 as f64);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let (qx, qy) = (ax + t * dx, ay + t * dy);
+    ((px - qx).powi(2) + (py - qy).powi(2)).sqrt()
+}
+
+/// Is the pointer on the outline of `rect` (the capture region's border)?
+pub fn hits_rect_border(rect: Rect, x: i32, y: i32) -> bool {
+    let (rx, ry, rw, rh) = rect;
+    let corners = [(rx, ry), (rx + rw, ry), (rx + rw, ry + rh), (rx, ry + rh)];
+    let tol = GRAB_TOLERANCE as f64;
+    (0..4).any(|i| segment_distance(corners[i], corners[(i + 1) % 4], (x, y)) <= tol)
+}
+
+fn bounds_of(a: (i32, i32), b: (i32, i32)) -> Rect {
+    (
+        a.0.min(b.0),
+        a.1.min(b.1),
+        (a.0 - b.0).abs(),
+        (a.1 - b.1).abs(),
+    )
+}
+
+// ---------------------------------------------------------------- text (GDI)
+
+/// Text size follows the stroke width so the wheel controls both.
+fn font_px(width: f32) -> i32 {
+    12 + (width * 4.0) as i32
+}
+
+unsafe fn make_font(width: f32) -> HFONT {
+    CreateFontW(
+        -font_px(width),
+        0,
+        0,
+        0,
+        FW_BOLD.0 as i32,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        CLIP_DEFAULT_PRECIS.0 as u32,
+        CLEARTYPE_QUALITY.0 as u32,
+        DEFAULT_PITCH.0 as u32,
+        w!("Segoe UI"),
+    )
+}
+
+/// Measure without a window: a throwaway screen DC is enough for GDI text metrics.
+unsafe fn text_extent(text: &[u16], width: f32) -> (i32, i32) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+    let dc = GetDC(HWND::default());
+    let font = make_font(width);
+    let old = SelectObject(dc, font);
+    let probe: Vec<u16> = if text.is_empty() { vec![' ' as u16] } else { text.to_vec() };
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(dc, &probe, &mut size);
+    SelectObject(dc, old);
+    let _ = DeleteObject(font);
+    ReleaseDC(HWND::default(), dc);
+    (size.cx.max(4), size.cy.max(font_px(width)))
+}
+
+fn colorref(argb: u32) -> COLORREF {
+    let (r, g, b) = ((argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff);
+    COLORREF((b << 16) | (g << 8) | r)
+}
+
+unsafe fn draw_text(hdc: HDC, s: &Shape, caret: bool) {
+    let font = make_font(s.width);
+    let old = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, colorref(s.color));
+    let (x, y) = s.pts[0];
+    if !s.text.is_empty() {
+        let _ = TextOutW(hdc, x, y, &s.text);
+    }
+    if caret {
+        let (w, h) = {
+            let mut size = SIZE::default();
+            if s.text.is_empty() {
+                (0, font_px(s.width))
+            } else {
+                let _ = GetTextExtentPoint32W(hdc, &s.text, &mut size);
+                (size.cx, size.cy)
+            }
+        };
+        let bar: Vec<u16> = "|".encode_utf16().collect();
+        let _ = TextOutW(hdc, x + w, y + (h - font_px(s.width)) / 2, &bar);
+    }
+    SelectObject(hdc, old);
+    let _ = DeleteObject(font);
 }
 
 // ---------------------------------------------------------------- GDI+ plumbing
@@ -156,31 +342,43 @@ fn pt(x: i32, y: i32) -> Point {
     Point { X: x, Y: y }
 }
 
-fn bounds(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
-    (
-        a.0.min(b.0),
-        a.1.min(b.1),
-        (a.0 - b.0).abs(),
-        (a.1 - b.1).abs(),
-    )
-}
-
 // ---------------------------------------------------------------- shape drawing
 
-/// Paint every committed shape plus the one being dragged. Shapes are stroke-only by
-/// product rule; the arrow head is the sole filled element (a hollow head reads as a "V").
-pub unsafe fn draw_shapes(hdc: HDC, shapes: &[Shape], active: Option<&Shape>) {
-    if shapes.is_empty() && active.is_none() {
+/// Paint every committed shape, the one being dragged, and the text being typed — all
+/// clipped to the capture region so the preview never shows more than the file keeps.
+/// Shapes are stroke-only by product rule; the arrow head is the sole filled element.
+pub unsafe fn draw_shapes(
+    hdc: HDC,
+    clip: Rect,
+    shapes: &[Shape],
+    active: Option<&Shape>,
+    typing: Option<&Shape>,
+) {
+    if shapes.is_empty() && active.is_none() && typing.is_none() {
         return;
     }
-    let Some(canvas) = Canvas::new(hdc) else { return };
-    for s in shapes.iter().chain(active) {
-        draw_one(canvas.0, s);
+    if let Some(canvas) = Canvas::new(hdc) {
+        GdipSetClipRectI(canvas.0, clip.0, clip.1, clip.2, clip.3, CombineModeReplace);
+        for s in shapes.iter().chain(active).filter(|s| s.tool != Tool::Text) {
+            draw_one(canvas.0, s);
+        }
     }
+    // Text after GDI+ is torn down, so the two drawing stacks never share the DC.
+    let rgn = CreateRectRgn(clip.0, clip.1, clip.0 + clip.2, clip.1 + clip.3);
+    SelectClipRgn(hdc, rgn);
+    for s in shapes.iter().filter(|s| s.tool == Tool::Text) {
+        draw_text(hdc, s, false);
+    }
+    if let Some(s) = typing {
+        draw_text(hdc, s, true);
+    }
+    SelectClipRgn(hdc, None);
+    let _ = DeleteObject(rgn);
 }
 
 unsafe fn draw_one(g: *mut GpGraphics, s: &Shape) {
     match s.tool {
+        Tool::Text => {}
         Tool::Pen => {
             let pts: Vec<Point> = s.pts.iter().map(|&(x, y)| pt(x, y)).collect();
             if pts.len() < 2 {
@@ -198,21 +396,15 @@ unsafe fn draw_one(g: *mut GpGraphics, s: &Shape) {
         }
         Tool::Line => {
             let (a, b) = (s.pts[0], s.pts[1]);
-            with_pen(s.color, s.width, |pen| {
-                GdipDrawLineI(g, pen, a.0, a.1, b.0, b.1);
-            });
+            with_pen(s.color, s.width, |pen| GdipDrawLineI(g, pen, a.0, a.1, b.0, b.1));
         }
         Tool::Rect => {
-            let (x, y, w, h) = bounds(s.pts[0], s.pts[1]);
-            with_pen(s.color, s.width, |pen| {
-                GdipDrawRectangleI(g, pen, x, y, w, h);
-            });
+            let (x, y, w, h) = bounds_of(s.pts[0], s.pts[1]);
+            with_pen(s.color, s.width, |pen| GdipDrawRectangleI(g, pen, x, y, w, h));
         }
         Tool::Circle => {
-            let (x, y, w, h) = bounds(s.pts[0], s.pts[1]);
-            with_pen(s.color, s.width, |pen| {
-                GdipDrawEllipseI(g, pen, x, y, w, h);
-            });
+            let (x, y, w, h) = bounds_of(s.pts[0], s.pts[1]);
+            with_pen(s.color, s.width, |pen| GdipDrawEllipseI(g, pen, x, y, w, h));
         }
         Tool::Arrow => draw_arrow(g, s),
     }
@@ -237,7 +429,7 @@ unsafe fn draw_arrow(g: *mut GpGraphics, s: &Shape) {
 
     // Stop the shaft inside the head so the two never show a seam.
     with_pen(s.color, s.width, |pen| {
-        GdipDrawLineI(g, pen, tail.0, tail.1, notch.0.round() as i32, notch.1.round() as i32);
+        GdipDrawLineI(g, pen, tail.0, tail.1, notch.0.round() as i32, notch.1.round() as i32)
     });
 
     let poly = [
@@ -246,9 +438,7 @@ unsafe fn draw_arrow(g: *mut GpGraphics, s: &Shape) {
         pt(notch.0.round() as i32, notch.1.round() as i32),
         pt((base.0 - px * half).round() as i32, (base.1 - py * half).round() as i32),
     ];
-    with_brush(s.color, |brush| {
-        GdipFillPolygonI(g, brush, poly.as_ptr(), 4, FillModeAlternate);
-    });
+    with_brush(s.color, |brush| GdipFillPolygonI(g, brush, poly.as_ptr(), 4, FillModeAlternate));
 }
 
 // ---------------------------------------------------------------- toolbar
@@ -258,6 +448,7 @@ pub enum Action {
     Pick(Tool),
     Color(usize),
     Width(usize),
+    /// `keeper` = a timestamped file in saved/ (the Save mode); otherwise temp.png (Quick).
     Commit { keeper: bool },
 }
 
@@ -278,7 +469,7 @@ impl Cell {
 const CELL: i32 = 28;
 const SWATCH: i32 = 22;
 const WCELL: i32 = 20;
-const BTN: i32 = 46;
+const BTN: i32 = 50;
 const PAD: i32 = 8;
 const GAP: i32 = 12;
 pub const BAR_H: i32 = CELL + PAD * 2;
@@ -297,7 +488,7 @@ fn bar_width() -> i32 {
 
 /// Place the bar under the selection, flipping above it (or inside it) when the screen
 /// edge is in the way, and clamp so it is always fully on-screen.
-pub fn layout(sel: (i32, i32, i32, i32), screen: (i32, i32)) -> Vec<Cell> {
+pub fn layout(sel: Rect, screen: (i32, i32)) -> Vec<Cell> {
     let bw = bar_width();
     let x = (sel.0).clamp(0, (screen.0 - bw).max(0));
     let below = sel.1 + sel.3 + 10;
@@ -400,12 +591,12 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], tool: Tool, color: usize, w
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
     for cell in cells {
         if let Action::Commit { keeper } = cell.action {
-            let label: Vec<u16> = if keeper { "KEEP" } else { "SAVE" }.encode_utf16().collect();
+            let label: Vec<u16> = if keeper { "SAVE" } else { "QUICK" }.encode_utf16().collect();
             let _ = TextOutW(hdc, cell.x + 7, cell.y + 7, &label);
         }
     }
     let hint: Vec<u16> =
-        "R rect  A arrow  L line  C circle  P pen   1-8 colour   wheel width   Ctrl+Z undo   Enter save   Shift+Enter keep   Esc cancel"
+        "R rect  A arrow  L line  C circle  P pen  T text   1-8 colour   wheel size   drag a border to move   Ctrl+Z undo   Enter quick   Shift+Enter save   Esc"
             .encode_utf16()
             .collect();
     SetTextColor(hdc, COLORREF(0x00000000));
@@ -430,6 +621,7 @@ unsafe fn draw_tool_glyph(g: *mut GpGraphics, tool: Tool, c: &Cell) {
                 color: white,
                 width: 1.6,
                 pts: vec![(x, y + h), (x + w, y)],
+                text: Vec::new(),
             },
         ),
         Tool::Pen => {
@@ -441,6 +633,10 @@ unsafe fn draw_tool_glyph(g: *mut GpGraphics, tool: Tool, c: &Cell) {
             ];
             with_pen(white, 1.6, |p| GdipDrawCurveI(g, p, pts.as_ptr(), 4));
         }
+        Tool::Text => with_pen(white, 2.0, |p| {
+            GdipDrawLineI(g, p, x, y + 1, x + w, y + 1);
+            GdipDrawLineI(g, p, x + w / 2, y + 1, x + w / 2, y + h)
+        }),
     }
 }
 
@@ -452,6 +648,7 @@ pub fn key_action(vk: u16) -> Option<Action> {
         'L' => Some(Action::Pick(Tool::Line)),
         'C' => Some(Action::Pick(Tool::Circle)),
         'P' => Some(Action::Pick(Tool::Pen)),
+        'T' => Some(Action::Pick(Tool::Text)),
         c @ '1'..='8' => Some(Action::Color(c as usize - '1' as usize)),
         _ => None,
     }
@@ -462,14 +659,16 @@ mod tests {
     use super::*;
 
     fn shape(tool: Tool, a: (i32, i32), b: (i32, i32)) -> Shape {
-        Shape { tool, color: PALETTE[0], width: 4.0, pts: vec![a, b] }
+        let mut s = Shape::new(tool, PALETTE[0], 4.0, a);
+        s.pts[1] = b;
+        s
     }
 
     #[test]
     fn shift_locks_a_square() {
         let mut s = shape(Tool::Rect, (10, 10), (10, 10));
         s.drag_to(60, 30, true);
-        let (_, _, w, h) = bounds(s.pts[0], s.pts[1]);
+        let (_, _, w, h) = bounds_of(s.pts[0], s.pts[1]);
         assert_eq!(w, h, "constrained rectangle must be square");
     }
 
@@ -485,7 +684,8 @@ mod tests {
 
     #[test]
     fn pen_skips_jitter_but_keeps_real_movement() {
-        let mut s = Shape { tool: Tool::Pen, color: 0, width: 2.0, pts: vec![(0, 0)] };
+        let mut s = Shape::new(Tool::Pen, 0, 2.0, (0, 0));
+        s.pts.truncate(1);
         s.drag_to(1, 0, false); // 1px -> noise
         assert_eq!(s.pts.len(), 1);
         s.drag_to(0, 5, false);
@@ -496,6 +696,51 @@ mod tests {
     fn a_click_without_a_drag_is_discarded() {
         assert!(shape(Tool::Rect, (5, 5), (6, 6)).is_degenerate());
         assert!(!shape(Tool::Rect, (5, 5), (60, 40)).is_degenerate());
+        let mut t = Shape::new(Tool::Text, 0, 4.0, (5, 5));
+        assert!(t.is_degenerate(), "empty text is nothing");
+        t.text.push('x' as u16);
+        assert!(!t.is_degenerate());
+    }
+
+    #[test]
+    fn rectangle_grabs_on_its_outline_not_its_middle() {
+        let s = shape(Tool::Rect, (100, 100), (300, 200));
+        unsafe {
+            assert!(s.hits_border(100, 150), "left edge");
+            assert!(s.hits_border(200, 203), "just outside the bottom edge");
+            assert!(!s.hits_border(200, 150), "hollow interior must not grab");
+            assert!(!s.hits_border(400, 150), "far away");
+        }
+    }
+
+    #[test]
+    fn line_and_circle_grab_within_tolerance() {
+        let l = shape(Tool::Line, (0, 0), (100, 0));
+        unsafe {
+            assert!(l.hits_border(50, 5));
+            assert!(!l.hits_border(50, 20));
+        }
+        let c = shape(Tool::Circle, (0, 0), (200, 100)); // centre (100,50), radii 100/50
+        unsafe {
+            assert!(c.hits_border(200, 50), "rightmost point of the ellipse");
+            assert!(c.hits_border(100, 3), "top of the ellipse");
+            assert!(!c.hits_border(100, 50), "centre is hollow");
+        }
+    }
+
+    #[test]
+    fn region_border_grabs_only_near_the_edge() {
+        let r = (100, 100, 400, 300);
+        assert!(hits_rect_border(r, 100, 250));
+        assert!(hits_rect_border(r, 503, 250));
+        assert!(!hits_rect_border(r, 300, 250));
+    }
+
+    #[test]
+    fn move_shifts_every_point() {
+        let mut s = shape(Tool::Line, (10, 10), (20, 30));
+        s.move_by(5, -5);
+        assert_eq!(s.pts, vec![(15, 5), (25, 25)]);
     }
 
     #[test]
