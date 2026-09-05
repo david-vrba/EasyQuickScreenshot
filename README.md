@@ -38,20 +38,26 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | | |
 |---|---|
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
-| `T` | text — click where it goes, type, `Enter`. While typing: `Ctrl+A` select all, `Ctrl+C` / `Ctrl+X` copy / cut, `Ctrl+V` paste |
-| `1`–`8` | colour — **red is the default** |
-| mouse wheel | stroke width / text size |
+| `T` | text — click where it goes, type, `Enter`. While typing: `←` `→` `Home` `End` move the caret, `Del` deletes forward, `Ctrl+A` select all, `Ctrl+C` / `Ctrl+X` copy / cut, `Ctrl+V` paste |
+| `1`–`8` | colour — **red is the default**, and whatever you pick is still there next capture |
+| mouse wheel | stroke width / text size — also remembered |
 | hold `Shift` | perfect square / circle, or snap a line to 45° |
 | drag a border | move a shape by its outline, or move the whole region by its edge |
-| `Ctrl+Z` or right-click | undo the last shape |
+| drag a corner | resize it — the opposite corner stays put. Works on shapes and on the capture region |
+| `Ctrl+Z` or right-click | undo — covers moves and resizes, not just drawing |
+| `Ctrl+Y` or `Ctrl+Shift+Z` | redo |
 | `Enter` or **QUICK** | write `shots/temp.png` — same as a quick shot |
 | `Shift+Enter` or **SAVE** | write a timestamped copy in `shots/saved/` — same as a save |
 | `Esc` | cancel the current shape, again to abort |
 
 Every tool is also a button on the toolbar, so you never have to remember a key. Shapes are
-drawn stroke-only — nothing is ever filled in over your screenshot. Hover a drawn shape's
-outline and the cursor turns into a move cursor; drag to reposition it. The same works on the
-region's own border, so you can slide the whole capture area after the fact.
+drawn stroke-only — nothing is ever filled in over your screenshot.
+
+Hover a drawn shape and small white grips appear on it. Drag a grip to resize, drag anywhere
+else on the outline to move the whole thing. The capture region itself works the same way: its
+four corners resize the shot and its edges slide it, so a selection that came out slightly
+wrong is fixed in place instead of started over. Grips are preview only — they never reach
+the file.
 
 It opens **inside the capture overlay**: no second window, no app launch, nothing to wait for.
 A plain `Ctrl+Alt+Q` is untouched and never shows the toolbar.

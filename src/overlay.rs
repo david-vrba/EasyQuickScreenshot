@@ -23,20 +23,25 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DELETE, VK_END, VK_ESCAPE, VK_HOME,
+    VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow,
     TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_ARROW,
-    IDC_CROSS, IDC_SIZEALL, MSG, SW_SHOW, WM_CHAR, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+    IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, MSG, SW_SHOW, WM_CHAR, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KILLFOCUS,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_QUIT,
     WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
 
-use crate::annotate::{self, Action, Cell, Rect, Shape, TextInput, Tool, Typing, PALETTE, WIDTHS};
+use crate::annotate::{
+    self, Action, BarState, Cell, Handle, History, Hint, Rect, Shape, TextInput, Tool, Typing,
+    PALETTE, WIDTHS,
+};
 use crate::capture::Screenshot;
 use crate::clipboard;
 use crate::config::CrosshairStyle;
@@ -76,6 +81,7 @@ struct Overlay {
     sel: (i32, i32, i32, i32),
     cells: Vec<Cell>,
     shapes: Vec<Shape>,
+    history: History,
     active: Option<Shape>,
     tool: Tool,
     color: usize,
@@ -84,16 +90,35 @@ struct Overlay {
     /// Text being typed (the shape that renders it + the editing state); committed to
     /// `shapes` on Enter or when the mouse does anything else.
     typing: Option<(Shape, TextInput)>,
-    /// A shape or the whole region being dragged by its border, with the last pointer position.
-    moving: Option<(Moving, (i32, i32))>,
+    /// The live drag, with the last pointer position it saw.
+    grabbed: Option<(Grab, (i32, i32))>,
+    /// The shape whose grips are showing — whatever a press would move or reshape.
+    hovered: Option<usize>,
     /// Set for the final compose: shapes only, no border, guides, or toolbar.
     exporting: bool,
 }
 
+/// A drag in progress: a whole shape or the region moving, or one handle of either
+/// being pulled. `point` and `corner` index into `Shape::pts` and the region's corners.
 #[derive(Clone, Copy)]
-enum Moving {
+enum Grab {
     Shape(usize),
     Region,
+    /// `anchor` is the point the drag pivots on and `nwse` the diagonal its cursor sits on.
+    /// Both are read once at the press: re-deriving them mid-drag lets them drift when the
+    /// pointer crosses over the anchor.
+    ResizeShape { shape: usize, anchor: (i32, i32), nwse: bool },
+    ResizeRegion { anchor: (i32, i32), nwse: bool },
+}
+
+/// What a press at a given spot would grab. Separate from `Grab` because hit-testing runs
+/// on every mouse move to pick the cursor, and must not disturb the shape it reports.
+#[derive(Clone, Copy)]
+enum Target {
+    ShapeHandle { shape: usize, handle: Handle },
+    ShapeBody(usize),
+    RegionHandle(usize),
+    RegionBody,
 }
 
 /// Show the selection UI over the frozen screenshot.
@@ -127,6 +152,7 @@ pub fn select_region(
         let mut cursor = windows::Win32::Foundation::POINT::default();
         let _ = GetCursorPos(&mut cursor);
 
+        let (color, stroke) = annotate::remembered();
         let state = Box::into_raw(Box::new(Overlay {
             back_dc,
             bright_dc,
@@ -143,13 +169,15 @@ pub fn select_region(
             sel: (0, 0, 0, 0),
             cells: Vec::new(),
             shapes: Vec::new(),
+            history: History::new(),
             active: None,
             tool: Tool::Rect,
-            color: 0,
-            stroke: 1,
+            color,
+            stroke,
             keeper: false,
             typing: None,
-            moving: None,
+            grabbed: None,
+            hovered: None,
             exporting: false,
         }));
 
@@ -428,13 +456,12 @@ unsafe fn annotate_proc(
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            let (x, y) = cursor_in_client(hwnd);
-            let cursor = if annotate::over_bar(&state.cells, x, y) {
-                IDC_ARROW
-            } else if state.moving.is_some() || grab_target(state, x, y).is_some() {
-                IDC_SIZEALL
-            } else {
-                IDC_CROSS
+            let cursor = match state.grabbed {
+                Some((grab, _)) => dragging_cursor(grab),
+                None => {
+                    let (x, y) = cursor_in_client(hwnd);
+                    hover_cursor(state, x, y)
+                }
             };
             SetCursor(LoadCursorW(None, cursor).unwrap_or_default());
             LRESULT(1)
@@ -450,7 +477,7 @@ unsafe fn annotate_proc(
             } else if !annotate::over_bar(&state.cells, x, y) {
                 commit_typing(state);
                 if let Some(target) = grab_target(state, x, y) {
-                    state.moving = Some((target, (x, y)));
+                    state.grabbed = Some((begin_grab(state, target), (x, y)));
                     SetCapture(hwnd);
                 } else {
                     let p = clamp_to(state.sel, x, y);
@@ -468,9 +495,21 @@ unsafe fn annotate_proc(
         }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lparam);
-            if let Some((target, last)) = state.moving {
-                move_target(state, target, x - last.0, y - last.1);
-                state.moving = Some((target, (x, y)));
+            if let Some((grab, last)) = state.grabbed {
+                state.hovered = match grab {
+                    Grab::Shape(i) | Grab::ResizeShape { shape: i, .. } => Some(i),
+                    _ => None,
+                };
+                match grab {
+                    Grab::Shape(i) => move_shape(state, i, x - last.0, y - last.1),
+                    Grab::Region => move_region(state, x - last.0, y - last.1),
+                    Grab::ResizeShape { shape, anchor, .. } => {
+                        let (cx, cy) = clamp_to(state.sel, x, y);
+                        resize_shape(state, shape, anchor, cx, cy, key_down(VK_SHIFT));
+                    }
+                    Grab::ResizeRegion { anchor, .. } => resize_region(state, anchor, x, y),
+                }
+                state.grabbed = Some((grab, (x, y)));
                 let _ = InvalidateRect(hwnd, None, false);
             } else if let Some(shape) = state.active.as_mut() {
                 let (cx, cy) = clamp_to(state.sel, x, y);
@@ -481,15 +520,25 @@ unsafe fn annotate_proc(
                     *end = clamp_to(state.sel, end.0, end.1);
                 }
                 let _ = InvalidateRect(hwnd, None, false);
+            } else {
+                let was = state.hovered;
+                state.hovered = hovered_shape(state, x, y);
+                if state.hovered != was {
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             let _ = ReleaseCapture();
-            state.moving = None;
+            if let Some((grab, _)) = state.grabbed.take() {
+                if matches!(grab, Grab::Shape(_) | Grab::ResizeShape { .. }) {
+                    state.history.forget_if_unchanged(&state.shapes);
+                }
+            }
             if let Some(shape) = state.active.take() {
                 if !shape.is_degenerate() {
-                    state.shapes.push(shape);
+                    push_shape(state, shape);
                 }
                 let _ = InvalidateRect(hwnd, None, false);
             }
@@ -507,8 +556,7 @@ unsafe fn annotate_proc(
         WM_RBUTTONDOWN => {
             // Mouse-only undo; matches the right-click-cancels reflex from phase one.
             if state.typing.take().is_none() {
-                state.active = None;
-                state.shapes.pop();
+                undo(state);
             }
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
@@ -530,30 +578,14 @@ unsafe fn annotate_proc(
         }
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
-            if let Some((shape, input)) = state.typing.as_mut() {
-                // While typing, letters are text. Enter/Esc end it; Ctrl+A/C/V/X edit it.
+            if state.typing.is_some() {
+                // While typing, letters are text — only Enter and Esc end it.
                 if vk == VK_ESCAPE.0 {
                     state.typing = None;
                 } else if vk == VK_RETURN.0 {
                     commit_typing(state);
-                } else if key_down(VK_CONTROL) {
-                    match vk as u8 as char {
-                        'A' => input.select_all(),
-                        'C' => {
-                            let _ = clipboard::copy_text(hwnd, &input.copy());
-                        }
-                        'X' => {
-                            let cut = input.cut();
-                            let _ = clipboard::copy_text(hwnd, &cut);
-                        }
-                        'V' => {
-                            if let Some(clip) = clipboard::read_text(hwnd) {
-                                input.paste(&clip);
-                            }
-                        }
-                        _ => {}
-                    }
-                    shape.text = input.text.clone();
+                } else {
+                    edit_typing(state, hwnd, vk);
                 }
                 let _ = InvalidateRect(hwnd, None, false);
                 return LRESULT(0);
@@ -567,8 +599,13 @@ unsafe fn annotate_proc(
             } else if vk == VK_RETURN.0 {
                 apply(state, Action::Commit { keeper: key_down(VK_SHIFT) });
             } else if ctrl && vk as u8 as char == 'Z' {
-                state.active = None;
-                state.shapes.pop();
+                if key_down(VK_SHIFT) {
+                    redo(state);
+                } else {
+                    undo(state);
+                }
+            } else if ctrl && vk as u8 as char == 'Y' {
+                redo(state);
             } else if !ctrl {
                 if let Some(action) = annotate::key_action(vk) {
                     apply(state, action);
@@ -588,45 +625,215 @@ unsafe fn cursor_in_client(hwnd: HWND) -> (i32, i32) {
     (p.x, p.y)
 }
 
-/// What a press at (x, y) would drag: the topmost shape whose outline is under the pointer,
-/// else the region border, else nothing.
-unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Moving> {
+/// What a press at (x, y) would grab. Handles are tested before bodies because a handle
+/// is a 9px target while a border is a whole edge — the small target has to win where the
+/// two overlap, or corners would be unreachable.
+unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Target> {
+    if let Some((shape, handle)) = state
+        .shapes
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, s)| s.hits_handle(x, y).map(|h| (i, h)))
+    {
+        return Some(Target::ShapeHandle { shape, handle });
+    }
     if let Some(i) = state.shapes.iter().rposition(|s| s.hits_border(x, y)) {
-        return Some(Moving::Shape(i));
+        return Some(Target::ShapeBody(i));
+    }
+    if let Some(corner) = annotate::hits_rect_handle(state.sel, x, y) {
+        return Some(Target::RegionHandle(corner));
     }
     if annotate::hits_rect_border(state.sel, x, y) {
-        return Some(Moving::Region);
+        return Some(Target::RegionBody);
     }
     None
 }
 
-unsafe fn move_target(state: &mut Overlay, target: Moving, dx: i32, dy: i32) {
+/// The shape whose grips should show: the one a press here would move or reshape.
+unsafe fn hovered_shape(state: &Overlay, x: i32, y: i32) -> Option<usize> {
+    match grab_target(state, x, y) {
+        Some(Target::ShapeHandle { shape, .. } | Target::ShapeBody(shape)) => Some(shape),
+        _ => None,
+    }
+}
+
+/// Turn a hit test into a live drag, recording the state anything editable starts from.
+fn begin_grab(state: &mut Overlay, target: Target) -> Grab {
     match target {
-        Moving::Region => {
-            let (sx, sy, sw, sh) = state.sel;
-            let nx = (sx + dx).clamp(0, (state.width - sw).max(0));
-            let ny = (sy + dy).clamp(0, (state.height - sh).max(0));
-            state.sel = (nx, ny, sw, sh);
-            state.result = Some(state.sel);
-            state.cells = annotate::layout(state.sel, (state.width, state.height));
+        Target::RegionBody => Grab::Region,
+        Target::RegionHandle(corner) => Grab::ResizeRegion {
+            anchor: annotate::rect_anchor(state.sel, corner),
+            nwse: corner == 0 || corner == 2,
+        },
+        Target::ShapeBody(i) => {
+            state.history.checkpoint(&state.shapes);
+            Grab::Shape(i)
         }
-        Moving::Shape(i) => {
-            let Some(shape) = state.shapes.get_mut(i) else { return };
-            let (x0, y0, x1, y1) = shape.bounds();
-            let (sx, sy, sw, sh) = state.sel;
-            // Keep the whole shape inside the region; a shape wider than the region just
-            // stays put on that axis.
-            let dx = if x1 - x0 <= sw { dx.clamp(sx - x0, sx + sw - x1) } else { 0 };
-            let dy = if y1 - y0 <= sh { dy.clamp(sy - y0, sy + sh - y1) } else { 0 };
-            shape.move_by(dx, dy);
+        Target::ShapeHandle { shape, handle } => {
+            state.history.checkpoint(&state.shapes);
+            match state.shapes.get(shape) {
+                Some(s) => Grab::ResizeShape {
+                    shape,
+                    anchor: s.anchor_for(handle),
+                    nwse: s.handle_is_nwse(handle),
+                },
+                None => Grab::Region,
+            }
         }
     }
+}
+
+/// The cursor that says what a press here would do.
+unsafe fn hover_cursor(state: &Overlay, x: i32, y: i32) -> PCWSTR {
+    if annotate::over_bar(&state.cells, x, y) {
+        return IDC_ARROW;
+    }
+    match grab_target(state, x, y) {
+        Some(Target::ShapeHandle { shape, handle }) => {
+            if state.shapes[shape].handle_is_nwse(handle) {
+                IDC_SIZENWSE
+            } else {
+                IDC_SIZENESW
+            }
+        }
+        Some(Target::RegionHandle(corner)) => {
+            if corner == 0 || corner == 2 {
+                IDC_SIZENWSE
+            } else {
+                IDC_SIZENESW
+            }
+        }
+        Some(Target::ShapeBody(_) | Target::RegionBody) => IDC_SIZEALL,
+        None => IDC_CROSS,
+    }
+}
+
+/// The cursor while a drag is running. Held rather than re-tested, so it cannot flicker
+/// back to the crosshair when the pointer outruns the handle it is pulling.
+fn dragging_cursor(grab: Grab) -> PCWSTR {
+    match grab {
+        Grab::Shape(_) | Grab::Region => IDC_SIZEALL,
+        Grab::ResizeShape { nwse, .. } | Grab::ResizeRegion { nwse, .. } => {
+            if nwse {
+                IDC_SIZENWSE
+            } else {
+                IDC_SIZENESW
+            }
+        }
+    }
+}
+
+fn move_region(state: &mut Overlay, dx: i32, dy: i32) {
+    let (sx, sy, sw, sh) = state.sel;
+    let nx = (sx + dx).clamp(0, (state.width - sw).max(0));
+    let ny = (sy + dy).clamp(0, (state.height - sh).max(0));
+    state.sel = (nx, ny, sw, sh);
+    state.result = Some(state.sel);
+    state.cells = annotate::layout(state.sel, (state.width, state.height));
+}
+
+unsafe fn move_shape(state: &mut Overlay, i: usize, dx: i32, dy: i32) {
+    let (sx, sy, sw, sh) = state.sel;
+    let Some(shape) = state.shapes.get_mut(i) else { return };
+    let (x0, y0, x1, y1) = shape.bounds();
+    // Keep the whole shape inside the region; a shape wider than the region just stays
+    // put on that axis.
+    let dx = if x1 - x0 <= sw { dx.clamp(sx - x0, sx + sw - x1) } else { 0 };
+    let dy = if y1 - y0 <= sh { dy.clamp(sy - y0, sy + sh - y1) } else { 0 };
+    shape.move_by(dx, dy);
+}
+
+/// Pull one end of a shape to the cursor, keeping that end inside the capture region.
+fn resize_shape(
+    state: &mut Overlay,
+    i: usize,
+    anchor: (i32, i32),
+    x: i32,
+    y: i32,
+    constrain: bool,
+) {
+    let sel = state.sel;
+    let Some(shape) = state.shapes.get_mut(i) else { return };
+    shape.resize_from(anchor, x, y, constrain);
+    // A Shift-constrained end can land outside the region; pull it back so the preview
+    // never shows more than the export will keep.
+    let moved = if shape.pts[0] == anchor { 1 } else { 0 };
+    let p = shape.pts[moved];
+    shape.pts[moved] = clamp_to(sel, p.0, p.1);
+}
+
+/// Move one corner of the capture region and leave the opposite one where it is. Shapes
+/// stay put: the region simply keeps or drops them, which is what the clipping already does.
+fn resize_region(state: &mut Overlay, anchor: (i32, i32), x: i32, y: i32) {
+    let x = x.clamp(0, state.width);
+    let y = y.clamp(0, state.height);
+    let r = annotate::rect_from(anchor, x, y);
+    let w = r.2.max(MIN_SELECTION_PX);
+    let h = r.3.max(MIN_SELECTION_PX);
+    state.sel = (
+        r.0.clamp(0, (state.width - w).max(0)),
+        r.1.clamp(0, (state.height - h).max(0)),
+        w,
+        h,
+    );
+    state.result = Some(state.sel);
+    state.cells = annotate::layout(state.sel, (state.width, state.height));
+}
+
+/// One keystroke inside the text tool: the clipboard keys, the caret keys, forward delete.
+unsafe fn edit_typing(state: &mut Overlay, hwnd: HWND, vk: u16) {
+    let ctrl = key_down(VK_CONTROL);
+    let Some((shape, input)) = state.typing.as_mut() else { return };
+    if ctrl {
+        match vk as u8 as char {
+            'A' => input.select_all(),
+            'C' => {
+                let _ = clipboard::copy_text(hwnd, &input.copy());
+            }
+            'X' => {
+                let cut = input.cut();
+                let _ = clipboard::copy_text(hwnd, &cut);
+            }
+            'V' => {
+                if let Some(clip) = clipboard::read_text(hwnd) {
+                    input.paste(&clip);
+                }
+            }
+            _ => {}
+        }
+    } else if vk == VK_LEFT.0 {
+        input.move_left();
+    } else if vk == VK_RIGHT.0 {
+        input.move_right();
+    } else if vk == VK_HOME.0 {
+        input.move_home();
+    } else if vk == VK_END.0 {
+        input.move_end();
+    } else if vk == VK_DELETE.0 {
+        input.delete();
+    }
+    shape.text = input.text.clone();
+}
+
+fn push_shape(state: &mut Overlay, shape: Shape) {
+    state.history.checkpoint(&state.shapes);
+    state.shapes.push(shape);
+}
+
+fn undo(state: &mut Overlay) {
+    state.active = None;
+    state.history.undo(&mut state.shapes);
+}
+
+fn redo(state: &mut Overlay) {
+    state.history.redo(&mut state.shapes);
 }
 
 fn commit_typing(state: &mut Overlay) {
     if let Some((t, _)) = state.typing.take() {
         if !t.is_degenerate() {
-            state.shapes.push(t);
+            push_shape(state, t);
         }
     }
 }
@@ -645,6 +852,7 @@ fn apply(state: &mut Overlay, action: Action) {
         t.color = PALETTE[state.color];
         t.width = WIDTHS[state.stroke];
     }
+    annotate::remember(state.color, state.stroke);
 }
 
 unsafe fn paint(state: &Overlay, hdc: HDC) {
@@ -667,10 +875,11 @@ unsafe fn compose(state: &Overlay) {
             state.sel,
             &state.shapes,
             state.active.as_ref(),
-            state
-                .typing
-                .as_ref()
-                .map(|(shape, input)| Typing { shape, all_selected: input.all_selected }),
+            state.typing.as_ref().map(|(shape, input)| Typing {
+                shape,
+                caret: input.caret,
+                all_selected: input.all_selected,
+            }),
         );
         if state.exporting {
             return; // the output must carry the drawing and nothing else
@@ -683,7 +892,17 @@ unsafe fn compose(state: &Overlay) {
         SetROP2(back, R2_COPYPEN);
         SelectObject(back, old_brush);
         SelectObject(back, old_pen);
-        annotate::draw_toolbar(back, &state.cells, state.tool, state.color, state.stroke);
+        annotate::draw_handles(back, &annotate::rect_corners(state.sel));
+        if let Some(shape) = state.hovered.and_then(|i| state.shapes.get(i)) {
+            annotate::draw_handles(back, &shape.handle_points());
+        }
+        let bar = BarState {
+            tool: state.tool,
+            color: state.color,
+            width: state.stroke,
+            hint: if state.typing.is_some() { Hint::Typing } else { Hint::Drawing },
+        };
+        annotate::draw_toolbar(back, &state.cells, &bar);
         return;
     }
 
@@ -786,13 +1005,15 @@ pub fn render_test_frame(
             sel,
             cells: Vec::new(),
             shapes: Vec::new(),
+            history: History::new(),
             active: None,
             tool: Tool::Rect,
             color: 0,
             stroke: 1,
             keeper: false,
             typing: None,
-            moving: None,
+            grabbed: None,
+            hovered: Some(0),
             exporting: false,
         };
 
@@ -803,8 +1024,10 @@ pub fn render_test_frame(
             state.cells = annotate::layout(sel, (shot.width, shot.height));
             state.shapes = demo_shapes(sel);
             let mut input = TextInput::new();
-            input.paste(&"selected text".encode_utf16().collect::<Vec<u16>>());
-            input.select_all();
+            input.paste(&"caret here".encode_utf16().collect::<Vec<u16>>());
+            for _ in 0..4 {
+                input.move_left();
+            }
             let mut shape =
                 Shape::new(Tool::Text, PALETTE[4], 4.0, (sel.0 + 24, sel.1 + sel.3 - 60));
             shape.text = input.text.clone();
@@ -888,13 +1111,16 @@ pub fn export_test(
             sel,
             cells: annotate::layout(sel, (shot.width, shot.height)),
             shapes: demo_shapes(sel),
+            history: History::new(),
             active: None,
             tool: Tool::Rect,
             color: 0,
             stroke: 1,
             keeper: false,
             typing: None,
-            moving: None,
+            grabbed: None,
+            // Grips live on the way in: the export must still not contain them.
+            hovered: Some(0),
             exporting: false,
         };
         let pixels = export_annotated(&mut state);

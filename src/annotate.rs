@@ -39,6 +39,40 @@ pub const WIDTHS: [f32; 3] = [2.0, 4.0, 6.0];
 /// How close (px) the pointer must be to a border to grab it for moving.
 pub const GRAB_TOLERANCE: i32 = 7;
 
+/// How close (px) the pointer must be to an end or a corner to grab it for resizing.
+/// Wider than `GRAB_TOLERANCE` so a corner always wins over the two edges meeting there.
+pub const HANDLE_TOLERANCE: i32 = 9;
+
+/// A grabbable point that reshapes rather than moves. Rectangles and circles expose all
+/// four bounding-box corners; lines and arrows expose their two ends.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Handle {
+    Point(usize),
+    Corner(usize),
+}
+
+// ---------------------------------------------------------------- sticky choices
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// The colour and width the last capture ended on, so the next one opens where you left
+/// off. Memory only: the tray process outlives every capture, and writing config.toml
+/// mid-capture would put disk I/O on the one path that has to stay instant.
+static LAST_COLOR: AtomicUsize = AtomicUsize::new(0);
+static LAST_WIDTH: AtomicUsize = AtomicUsize::new(1);
+
+pub fn remembered() -> (usize, usize) {
+    (
+        LAST_COLOR.load(Ordering::Relaxed).min(PALETTE.len() - 1),
+        LAST_WIDTH.load(Ordering::Relaxed).min(WIDTHS.len() - 1),
+    )
+}
+
+pub fn remember(color: usize, width: usize) {
+    LAST_COLOR.store(color, Ordering::Relaxed);
+    LAST_WIDTH.store(width, Ordering::Relaxed);
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tool {
     Rect,
@@ -58,7 +92,7 @@ const TOOLS: [Tool; 6] = [
     Tool::Text,
 ];
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Shape {
     pub tool: Tool,
     pub color: u32,
@@ -110,6 +144,71 @@ impl Shape {
         self.pts[1] = (a.0 + dx, a.1 + dy);
     }
 
+    /// The point a resize pivots around: the opposite corner, or the other end. Reading
+    /// it changes nothing, so hit-testing a handle never disturbs the shape.
+    pub fn anchor_for(&self, handle: Handle) -> (i32, i32) {
+        match handle {
+            Handle::Corner(i) => rect_corners(bounds_of(self.pts[0], self.pts[1]))[(i + 2) % 4],
+            Handle::Point(i) => self.pts[1 - i.min(1)],
+        }
+    }
+
+    /// Pull one end to (x, y), pivoting on `anchor`. This is the same maths as drawing the
+    /// shape from `anchor` in the first place, so Shift constrains a resize like a draw.
+    /// The anchor is passed in rather than recomputed because a drag that crosses over it
+    /// flips the shape, and a re-derived anchor would then walk away with the cursor.
+    pub fn resize_from(&mut self, anchor: (i32, i32), x: i32, y: i32, constrain: bool) {
+        if matches!(self.tool, Tool::Pen | Tool::Text) || self.pts.len() < 2 {
+            return;
+        }
+        // Arrows are direction-sensitive: whichever end is not being pulled keeps its slot,
+        // so the head never swaps with the tail.
+        let moving = if self.pts[1] == anchor { 0 } else { 1 };
+        self.pts[1 - moving] = anchor;
+        if moving == 0 {
+            self.pts.swap(0, 1);
+            self.drag_to(x, y, constrain);
+            self.pts.swap(0, 1);
+        } else {
+            self.drag_to(x, y, constrain);
+        }
+    }
+
+    /// Which handle is under the pointer, if any. Pen strokes and text have none: a hand
+    /// trail has no meaningful corner, and text is sized by the wheel.
+    pub fn hits_handle(&self, x: i32, y: i32) -> Option<Handle> {
+        match self.tool {
+            Tool::Pen | Tool::Text => None,
+            Tool::Line | Tool::Arrow => nearest_point(&self.pts[..2], x, y).map(Handle::Point),
+            Tool::Rect | Tool::Circle => {
+                let corners = rect_corners(bounds_of(self.pts[0], self.pts[1]));
+                nearest_point(&corners, x, y).map(Handle::Corner)
+            }
+        }
+    }
+
+    /// The points `hits_handle` matches, so the grips are drawn exactly where they grab.
+    pub fn handle_points(&self) -> Vec<(i32, i32)> {
+        match self.tool {
+            Tool::Pen | Tool::Text => Vec::new(),
+            Tool::Line | Tool::Arrow => self.pts[..2].to_vec(),
+            Tool::Rect | Tool::Circle => rect_corners(bounds_of(self.pts[0], self.pts[1])).to_vec(),
+        }
+    }
+
+    /// True when the handle sits on the diagonal that runs top-left to bottom-right from
+    /// its anchor. That is the whole of what picks between the two resize cursors.
+    pub fn handle_is_nwse(&self, handle: Handle) -> bool {
+        match handle {
+            Handle::Corner(i) => i == 0 || i == 2,
+            Handle::Point(i) if i <= 1 && self.pts.len() >= 2 => {
+                let (a, b) = (self.pts[1 - i], self.pts[i]);
+                (b.0 - a.0 >= 0) == (b.1 - a.1 >= 0)
+            }
+            Handle::Point(_) => true,
+        }
+    }
+
     /// A click that never became a drag (or text nobody typed) leaves nothing worth keeping.
     pub fn is_degenerate(&self) -> bool {
         match self.tool {
@@ -158,8 +257,7 @@ impl Shape {
                 .windows(2)
                 .any(|w| segment_distance(w[0], w[1], (x, y)) <= tol),
             Tool::Rect => {
-                let (rx, ry, rw, rh) = bounds_of(self.pts[0], self.pts[1]);
-                let corners = [(rx, ry), (rx + rw, ry), (rx + rw, ry + rh), (rx, ry + rh)];
+                let corners = rect_corners(bounds_of(self.pts[0], self.pts[1]));
                 (0..4).any(|i| segment_distance(corners[i], corners[(i + 1) % 4], (x, y)) <= tol)
             }
             Tool::Circle => {
@@ -191,10 +289,44 @@ fn segment_distance(a: (i32, i32), b: (i32, i32), p: (i32, i32)) -> f64 {
 
 /// Is the pointer on the outline of `rect` (the capture region's border)?
 pub fn hits_rect_border(rect: Rect, x: i32, y: i32) -> bool {
-    let (rx, ry, rw, rh) = rect;
-    let corners = [(rx, ry), (rx + rw, ry), (rx + rw, ry + rh), (rx, ry + rh)];
+    let corners = rect_corners(rect);
     let tol = GRAB_TOLERANCE as f64;
     (0..4).any(|i| segment_distance(corners[i], corners[(i + 1) % 4], (x, y)) <= tol)
+}
+
+/// Which corner of `rect` is under the pointer, if any. The capture region uses the same
+/// handles as a rectangle, so resizing the shot and resizing a drawing feel identical.
+pub fn hits_rect_handle(rect: Rect, x: i32, y: i32) -> Option<usize> {
+    nearest_point(&rect_corners(rect), x, y)
+}
+
+/// The corner a resize of `rect` pivots around. Read once when the drag starts: deriving
+/// it again mid-drag would make it follow the cursor across a flip.
+pub fn rect_anchor(rect: Rect, corner: usize) -> (i32, i32) {
+    rect_corners(rect)[(corner + 2) % 4]
+}
+
+/// The rectangle spanned by two opposite corners, normalised.
+pub fn rect_from(anchor: (i32, i32), x: i32, y: i32) -> Rect {
+    (
+        anchor.0.min(x),
+        anchor.1.min(y),
+        (anchor.0 - x).abs(),
+        (anchor.1 - y).abs(),
+    )
+}
+
+/// Corners clockwise from the top-left. Every handle index in this file means this order.
+pub fn rect_corners((x, y, w, h): Rect) -> [(i32, i32); 4] {
+    [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+}
+
+/// The candidate nearest the pointer and within `HANDLE_TOLERANCE`, by index.
+fn nearest_point(candidates: &[(i32, i32)], x: i32, y: i32) -> Option<usize> {
+    let tol = HANDLE_TOLERANCE;
+    (0..candidates.len())
+        .filter(|&i| (candidates[i].0 - x).abs() <= tol && (candidates[i].1 - y).abs() <= tol)
+        .min_by_key(|&i| (candidates[i].0 - x).pow(2) + (candidates[i].1 - y).pow(2))
 }
 
 fn bounds_of(a: (i32, i32), b: (i32, i32)) -> Rect {
@@ -206,48 +338,174 @@ fn bounds_of(a: (i32, i32), b: (i32, i32)) -> Rect {
     )
 }
 
+// ---------------------------------------------------------------- undo history
+
+/// How far back Ctrl+Z reaches. Each step is a copy of the shape list — small, but a cap
+/// keeps a long session from growing without bound.
+const HISTORY_LIMIT: usize = 64;
+
+/// Snapshots of the drawing from before each edit. Covers moves and resizes, not just
+/// added shapes, so undo never reaches past an edit it cannot see and deletes something else.
+pub struct History {
+    past: Vec<Vec<Shape>>,
+    future: Vec<Vec<Shape>>,
+}
+
+impl History {
+    pub fn new() -> History {
+        History { past: Vec::new(), future: Vec::new() }
+    }
+
+    /// Record what is about to change. A new edit is a new branch, so it also drops
+    /// whatever redo was holding.
+    pub fn checkpoint(&mut self, current: &[Shape]) {
+        self.past.push(current.to_vec());
+        if self.past.len() > HISTORY_LIMIT {
+            self.past.remove(0);
+        }
+        self.future.clear();
+    }
+
+    /// Drop the newest snapshot when the edit it guarded changed nothing, so a press that
+    /// never became a drag costs no undo step.
+    pub fn forget_if_unchanged(&mut self, current: &[Shape]) {
+        if self.past.last().is_some_and(|p| p.as_slice() == current) {
+            self.past.pop();
+        }
+    }
+
+    pub fn undo(&mut self, current: &mut Vec<Shape>) {
+        if let Some(previous) = self.past.pop() {
+            self.future.push(std::mem::replace(current, previous));
+        }
+    }
+
+    pub fn redo(&mut self, current: &mut Vec<Shape>) {
+        if let Some(next) = self.future.pop() {
+            self.past.push(std::mem::replace(current, next));
+        }
+    }
+}
+
 // ---------------------------------------------------------------- text editing
 
-/// The text being typed plus its one selection state. There is no cursor position: text
-/// grows at the end, and Ctrl+A selects everything, which the next edit then replaces.
+/// The text being typed, where the caret sits in it, and the one selection state.
+/// Selection is all-or-nothing (Ctrl+A); every edit happens at the caret. Indices count
+/// UTF-16 units, and each move steps over a whole surrogate pair, so a pasted emoji can
+/// never be cut in half.
 pub struct TextInput {
     pub text: Vec<u16>,
+    pub caret: usize,
     pub all_selected: bool,
+}
+
+fn is_high_surrogate(u: u16) -> bool {
+    (0xD800..=0xDBFF).contains(&u)
+}
+
+fn is_low_surrogate(u: u16) -> bool {
+    (0xDC00..=0xDFFF).contains(&u)
 }
 
 impl TextInput {
     pub fn new() -> TextInput {
-        TextInput { text: Vec::new(), all_selected: false }
+        TextInput { text: Vec::new(), caret: 0, all_selected: false }
+    }
+
+    fn left_of(&self, from: usize) -> usize {
+        let from = from.min(self.text.len());
+        if from >= 2 && is_low_surrogate(self.text[from - 1]) && is_high_surrogate(self.text[from - 2])
+        {
+            from - 2
+        } else {
+            from.saturating_sub(1)
+        }
+    }
+
+    fn right_of(&self, from: usize) -> usize {
+        let len = self.text.len();
+        if from >= len {
+            return len;
+        }
+        if from + 1 < len && is_high_surrogate(self.text[from]) && is_low_surrogate(self.text[from + 1])
+        {
+            from + 2
+        } else {
+            from + 1
+        }
+    }
+
+    fn clear_all(&mut self) {
+        self.text.clear();
+        self.caret = 0;
+        self.all_selected = false;
     }
 
     fn replace_selection(&mut self) {
         if self.all_selected {
-            self.text.clear();
-            self.all_selected = false;
+            self.clear_all();
         }
     }
 
     pub fn type_char(&mut self, ch: u16) {
         self.replace_selection();
-        self.text.push(ch);
+        self.text.insert(self.caret, ch);
+        self.caret += 1;
     }
 
     pub fn backspace(&mut self) {
         if self.all_selected {
-            self.replace_selection();
-        } else {
-            self.text.pop();
+            self.clear_all();
+            return;
         }
+        let from = self.left_of(self.caret);
+        self.text.drain(from..self.caret.min(self.text.len()));
+        self.caret = from;
+    }
+
+    /// The Delete key: removes what is ahead of the caret and leaves the caret put.
+    pub fn delete(&mut self) {
+        if self.all_selected {
+            self.clear_all();
+            return;
+        }
+        let to = self.right_of(self.caret);
+        self.text.drain(self.caret.min(self.text.len())..to);
+    }
+
+    /// An arrow key collapses a selection to the side it points at, the way every text
+    /// field does.
+    pub fn move_left(&mut self) {
+        self.caret = if self.all_selected { 0 } else { self.left_of(self.caret) };
+        self.all_selected = false;
+    }
+
+    pub fn move_right(&mut self) {
+        self.caret = if self.all_selected { self.text.len() } else { self.right_of(self.caret) };
+        self.all_selected = false;
+    }
+
+    pub fn move_home(&mut self) {
+        self.caret = 0;
+        self.all_selected = false;
+    }
+
+    pub fn move_end(&mut self) {
+        self.caret = self.text.len();
+        self.all_selected = false;
     }
 
     pub fn select_all(&mut self) {
         self.all_selected = !self.text.is_empty();
+        self.caret = self.text.len();
     }
 
     /// Clipboard text may span lines; the tool renders one line, so breaks become spaces.
     pub fn paste(&mut self, clip: &[u16]) {
         self.replace_selection();
-        let mut last_space = self.text.last().is_none_or(|&u| u == ' ' as u16);
+        let mut flat: Vec<u16> = Vec::with_capacity(clip.len());
+        let mut last_space =
+            self.caret == 0 || self.text.get(self.caret - 1).is_none_or(|&u| u == ' ' as u16);
         for &u in clip {
             let u = if u == '\r' as u16 || u == '\n' as u16 || u == '\t' as u16 {
                 ' ' as u16
@@ -258,8 +516,11 @@ impl TextInput {
                 continue;
             }
             last_space = u == ' ' as u16;
-            self.text.push(u);
+            flat.push(u);
         }
+        let at = self.caret.min(self.text.len());
+        self.text.splice(at..at, flat.iter().copied());
+        self.caret = at + flat.len();
     }
 
     /// Everything typed so far — Ctrl+C has no partial selection to be narrower than.
@@ -269,8 +530,7 @@ impl TextInput {
 
     pub fn cut(&mut self) -> Vec<u16> {
         let out = self.text.clone();
-        self.text.clear();
-        self.all_selected = false;
+        self.clear_all();
         out
     }
 }
@@ -322,10 +582,23 @@ fn colorref(argb: u32) -> COLORREF {
     COLORREF((b << 16) | (g << 8) | r)
 }
 
-/// How the text being typed should be shown: with a caret, and inverted when select-all is on.
+/// How the text being typed should be shown: where the caret sits, and whether the whole
+/// line is selected.
 pub struct Typing<'a> {
     pub shape: &'a Shape,
+    pub caret: usize,
     pub all_selected: bool,
+}
+
+/// Width of `text` in the font already selected into `hdc`, plus the line height. Empty
+/// text still has a height — that is what sizes the caret before anything is typed.
+unsafe fn measure(hdc: HDC, text: &[u16], width: f32) -> (i32, i32) {
+    if text.is_empty() {
+        return (0, font_px(width));
+    }
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, text, &mut size);
+    (size.cx, size.cy)
 }
 
 unsafe fn draw_text(hdc: HDC, s: &Shape, typing: Option<&Typing>) {
@@ -338,22 +611,16 @@ unsafe fn draw_text(hdc: HDC, s: &Shape, typing: Option<&Typing>) {
         let _ = TextOutW(hdc, x, y, &s.text);
     }
     if let Some(t) = typing {
-        let (w, h) = {
-            let mut size = SIZE::default();
-            if s.text.is_empty() {
-                (0, font_px(s.width))
-            } else {
-                let _ = GetTextExtentPoint32W(hdc, &s.text, &mut size);
-                (size.cx, size.cy)
-            }
-        };
+        let (w, h) = measure(hdc, &s.text, s.width);
         if t.all_selected && w > 0 {
             // Inverting the text box is the classic "everything is selected" look and
             // stays visible on any background without needing alpha.
             let _ = PatBlt(hdc, x - 1, y, w + 2, h, DSTINVERT);
         }
-        let bar: Vec<u16> = "|".encode_utf16().collect();
-        let _ = TextOutW(hdc, x + w, y + (h - font_px(s.width)) / 2, &bar);
+        // A drawn bar rather than a "|" glyph: it lands exactly between two characters
+        // instead of taking space of its own, and inverting keeps it visible anywhere.
+        let caret = measure(hdc, &s.text[..t.caret.min(s.text.len())], s.width).0;
+        let _ = PatBlt(hdc, x + caret, y, 2, h, DSTINVERT);
     }
     SelectObject(hdc, old);
     let _ = DeleteObject(font);
@@ -454,6 +721,23 @@ pub unsafe fn draw_shapes(
     }
     SelectClipRgn(hdc, None);
     let _ = DeleteObject(rgn);
+}
+
+/// Small grips on the points a drag would reshape, so a resize is visible rather than
+/// something you have to discover with the mouse. Preview only: the export returns before
+/// this is ever called, exactly like the toolbar and the selection border.
+pub unsafe fn draw_handles(hdc: HDC, points: &[(i32, i32)]) {
+    const R: i32 = 3;
+    let Some(canvas) = Canvas::new(hdc) else { return };
+    for &(x, y) in points {
+        with_brush(0xFFFFFFFF, |b| {
+            GdipFillRectangleI(canvas.0, b, x - R, y - R, R * 2 + 1, R * 2 + 1)
+        });
+        // An outline so a white grip still reads against a white screenshot.
+        with_pen(0xFF1E1E1E, 1.0, |p| {
+            GdipDrawRectangleI(canvas.0, p, x - R, y - R, R * 2, R * 2)
+        });
+    }
 }
 
 unsafe fn draw_one(g: *mut GpGraphics, s: &Shape) {
@@ -617,7 +901,23 @@ pub fn over_bar(cells: &[Cell], x: i32, y: i32) -> bool {
     x >= x0 && x < x1 && y >= y0 && y < y1
 }
 
-pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], tool: Tool, color: usize, width: usize) {
+/// Which key list the hint line shows. Typing swallows the tool letters, so offering
+/// them then would be a lie.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Hint {
+    Drawing,
+    Typing,
+}
+
+/// Everything the bar renders beyond its own cells.
+pub struct BarState {
+    pub tool: Tool,
+    pub color: usize,
+    pub width: usize,
+    pub hint: Hint,
+}
+
+pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
     let Some(first) = cells.first() else { return };
     let last = cells.last().unwrap();
     let (bx, by) = (first.x - PAD, first.y - PAD);
@@ -630,10 +930,10 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], tool: Tool, color: usize, w
 
         for cell in cells {
             let selected = matches!(
-                (cell.action, tool),
+                (cell.action, bar.tool),
                 (Action::Pick(t), cur) if t == cur
-            ) || cell.action == Action::Color(color)
-                || cell.action == Action::Width(width);
+            ) || cell.action == Action::Color(bar.color)
+                || cell.action == Action::Width(bar.width);
             if selected {
                 with_brush(0x40FFFFFF, |b| {
                     GdipFillRectangleI(g, b, cell.x, cell.y - 2, cell.w, cell.h + 4)
@@ -675,10 +975,11 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], tool: Tool, color: usize, w
             let _ = TextOutW(hdc, cell.x + 7, cell.y + 7, &label);
         }
     }
-    let hint: Vec<u16> =
-        "R rect  A arrow  L line  C circle  P pen  T text (Ctrl+A/C/V/X while typing)   1-8 colour   wheel size   drag a border to move   Ctrl+Z undo   Enter quick   Shift+Enter save   Esc"
-            .encode_utf16()
-            .collect();
+    let line = match bar.hint {
+        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
+        Hint::Typing => "typing:   Ctrl+A select all   Ctrl+C copy  Ctrl+X cut  Ctrl+V paste   arrows / Home / End move the caret   Del forward-delete   Enter place   Esc discard",
+    };
+    let hint: Vec<u16> = line.encode_utf16().collect();
     SetTextColor(hdc, COLORREF(0x00000000));
     let _ = TextOutW(hdc, bx + 2, by + BAR_H + 4, &hint);
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
@@ -883,6 +1184,216 @@ mod tests {
         assert_eq!(t.cut(), u("gone"));
         assert!(t.text.is_empty());
         assert!(!t.all_selected);
+    }
+
+    #[test]
+    fn the_caret_inserts_and_deletes_where_it_sits() {
+        let mut t = TextInput::new();
+        t.paste(&u("abd"));
+        t.move_left();
+        assert_eq!(t.caret, 2);
+        t.type_char('c' as u16);
+        assert_eq!(t.text, u("abcd"));
+        assert_eq!(t.caret, 3, "the caret follows what was typed");
+        t.backspace();
+        assert_eq!(t.text, u("abd"));
+        t.delete();
+        assert_eq!(t.text, u("ab"), "Delete removes ahead of the caret");
+        assert_eq!(t.caret, 2);
+        t.delete(); // nothing ahead — must not panic
+        assert_eq!(t.text, u("ab"));
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_ends() {
+        let mut t = TextInput::new();
+        t.paste(&u("hello"));
+        t.move_home();
+        assert_eq!(t.caret, 0);
+        t.move_left(); // already home
+        assert_eq!(t.caret, 0);
+        t.move_end();
+        assert_eq!(t.caret, 5);
+        t.move_right(); // already at the end
+        assert_eq!(t.caret, 5);
+    }
+
+    #[test]
+    fn an_arrow_key_collapses_a_selection_to_one_side() {
+        let mut t = TextInput::new();
+        t.paste(&u("word"));
+        t.select_all();
+        t.move_left();
+        assert_eq!((t.caret, t.all_selected), (0, false));
+        t.select_all();
+        t.move_right();
+        assert_eq!((t.caret, t.all_selected), (4, false));
+        assert_eq!(t.text, u("word"), "moving must never delete the selection");
+    }
+
+    #[test]
+    fn the_caret_steps_over_a_whole_surrogate_pair() {
+        let mut t = TextInput::new();
+        t.paste(&u("a\u{1F986}b")); // duck emoji: two UTF-16 units
+        assert_eq!(t.text.len(), 4);
+        t.move_left();
+        assert_eq!(t.caret, 3);
+        t.move_left();
+        assert_eq!(t.caret, 1, "one step skips both halves of the pair");
+        t.move_right();
+        assert_eq!(t.caret, 3);
+        t.backspace();
+        assert_eq!(t.text, u("ab"), "backspace removes the emoji, not half of it");
+    }
+
+    #[test]
+    fn paste_lands_at_the_caret() {
+        let mut t = TextInput::new();
+        t.paste(&u("ac"));
+        t.move_left();
+        t.paste(&u("b"));
+        assert_eq!(t.text, u("abc"));
+        assert_eq!(t.caret, 2);
+    }
+
+    #[test]
+    fn a_corner_beats_the_edge_underneath_it() {
+        let s = shape(Tool::Rect, (100, 100), (300, 200));
+        assert_eq!(s.hits_handle(100, 100), Some(Handle::Corner(0)));
+        assert_eq!(s.hits_handle(300, 100), Some(Handle::Corner(1)));
+        assert_eq!(s.hits_handle(200, 100), None, "mid-edge is a move, not a resize");
+        unsafe { assert!(s.hits_border(200, 100), "and it is still grabbable to move") };
+        assert_eq!(s.hits_handle(200, 150), None, "the hollow middle grabs nothing");
+    }
+
+    #[test]
+    fn pen_and_text_have_no_handles() {
+        let mut pen = Shape::new(Tool::Pen, PALETTE[0], 4.0, (10, 10));
+        pen.pts.push((50, 50));
+        assert_eq!(pen.hits_handle(10, 10), None);
+        let text = Shape::new(Tool::Text, PALETTE[0], 4.0, (10, 10));
+        assert_eq!(text.hits_handle(10, 10), None);
+    }
+
+    #[test]
+    fn a_corner_resize_pivots_on_the_opposite_corner() {
+        let mut s = shape(Tool::Rect, (100, 100), (300, 200));
+        let anchor = s.anchor_for(Handle::Corner(3)); // grab the bottom-left
+        assert_eq!(anchor, (300, 100), "pivots on the top-right");
+        s.resize_from(anchor, 150, 250, false);
+        assert_eq!(bounds_of(s.pts[0], s.pts[1]), (150, 100, 150, 150));
+    }
+
+    #[test]
+    fn resizing_the_tail_keeps_the_arrow_pointing_the_same_way() {
+        let mut s = shape(Tool::Arrow, (0, 0), (100, 0));
+        let tail_pivot = s.anchor_for(Handle::Point(0));
+        assert_eq!(tail_pivot, (100, 0), "dragging the tail pivots on the head");
+        s.resize_from(tail_pivot, 20, 20, false);
+        assert_eq!(s.pts, vec![(20, 20), (100, 0)], "the head must not move");
+        let head_pivot = s.anchor_for(Handle::Point(1));
+        s.resize_from(head_pivot, 200, 0, false);
+        assert_eq!(s.pts, vec![(20, 20), (200, 0)], "and now the tail must not move");
+    }
+
+    #[test]
+    fn a_resized_shape_still_obeys_shift() {
+        let mut s = shape(Tool::Rect, (0, 0), (10, 10));
+        s.resize_from((0, 0), 100, 40, true);
+        let (_, _, w, h) = bounds_of(s.pts[0], s.pts[1]);
+        assert_eq!(w, h, "Shift squares a resize, same as a draw");
+    }
+
+    #[test]
+    fn dragging_a_handle_past_its_pivot_leaves_the_pivot_alone() {
+        let mut s = shape(Tool::Rect, (100, 100), (300, 200));
+        let anchor = s.anchor_for(Handle::Corner(0)); // grab top-left, pivot bottom-right
+        assert_eq!(anchor, (300, 200));
+        s.resize_from(anchor, 400, 300, false); // dragged clean past the pivot
+        assert_eq!(bounds_of(s.pts[0], s.pts[1]), (300, 200, 100, 100));
+        s.resize_from(anchor, 500, 400, false); // further still: the pivot must not follow
+        assert_eq!(bounds_of(s.pts[0], s.pts[1]), (300, 200, 200, 200));
+    }
+
+    #[test]
+    fn the_region_resizes_around_a_fixed_anchor() {
+        let r = (100, 100, 400, 300); // corners (100,100) (500,100) (500,400) (100,400)
+        assert_eq!(hits_rect_handle(r, 500, 400), Some(2));
+        assert_eq!(hits_rect_handle(r, 300, 100), None, "mid-edge moves the region");
+        let anchor = rect_anchor(r, 0);
+        assert_eq!(anchor, (500, 400));
+        assert_eq!(rect_from(anchor, 200, 150), (200, 150, 300, 250));
+        // Past the anchor the rectangle flips; the anchor itself stays where it was.
+        assert_eq!(rect_from(anchor, 600, 500), (500, 400, 100, 100));
+        assert_eq!(rect_from(anchor, 700, 600), (500, 400, 200, 200));
+    }
+
+    #[test]
+    fn undo_steps_back_through_every_kind_of_edit() {
+        let mut h = History::new();
+        let mut shapes = Vec::new();
+        h.checkpoint(&shapes);
+        shapes.push(shape(Tool::Rect, (0, 0), (10, 10)));
+        h.checkpoint(&shapes);
+        shapes[0].move_by(5, 5);
+
+        h.undo(&mut shapes);
+        assert_eq!(shapes[0].pts[0], (0, 0), "the move comes back first");
+        h.undo(&mut shapes);
+        assert!(shapes.is_empty(), "then the shape itself");
+        h.undo(&mut shapes); // nothing left — must not panic
+        assert!(shapes.is_empty());
+
+        h.redo(&mut shapes);
+        assert_eq!(shapes.len(), 1);
+        h.redo(&mut shapes);
+        assert_eq!(shapes[0].pts[0], (5, 5), "redo replays the move too");
+    }
+
+    #[test]
+    fn a_new_edit_drops_what_redo_was_holding() {
+        let mut h = History::new();
+        let mut shapes = Vec::new();
+        h.checkpoint(&shapes);
+        shapes.push(shape(Tool::Rect, (0, 0), (10, 10)));
+        h.undo(&mut shapes);
+        h.checkpoint(&shapes);
+        shapes.push(shape(Tool::Line, (0, 0), (20, 20)));
+        h.redo(&mut shapes);
+        assert_eq!(shapes.len(), 1, "redo has nothing to restore after a new branch");
+        assert!(shapes[0].tool == Tool::Line);
+    }
+
+    #[test]
+    fn a_press_that_changed_nothing_costs_no_undo_step() {
+        let mut h = History::new();
+        let mut shapes = vec![shape(Tool::Rect, (0, 0), (10, 10))];
+        h.checkpoint(&shapes);
+        shapes[0].move_by(5, 5); // a real edit
+        h.checkpoint(&shapes); // then a press...
+        h.forget_if_unchanged(&shapes); // ...released without moving anything
+        h.undo(&mut shapes);
+        assert_eq!(shapes[0].pts[0], (0, 0), "one undo reaches the edit, not the no-op");
+    }
+
+    #[test]
+    fn the_handle_diagonal_picks_the_cursor() {
+        let r = shape(Tool::Rect, (0, 0), (100, 100));
+        assert!(r.handle_is_nwse(Handle::Corner(0)));
+        assert!(!r.handle_is_nwse(Handle::Corner(1)));
+        let backslash = shape(Tool::Line, (0, 0), (100, 100));
+        assert!(backslash.handle_is_nwse(Handle::Point(0)));
+        assert!(backslash.handle_is_nwse(Handle::Point(1)));
+        let slash = shape(Tool::Line, (0, 100), (100, 0));
+        assert!(!slash.handle_is_nwse(Handle::Point(1)));
+    }
+
+    #[test]
+    fn colour_and_width_carry_over_to_the_next_capture() {
+        remember(4, 2);
+        assert_eq!(remembered(), (4, 2));
+        remember(0, 1); // leave the defaults for anything else reading them
+        assert_eq!(remembered(), (0, 1));
     }
 
     #[test]
