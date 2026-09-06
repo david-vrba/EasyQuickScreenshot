@@ -12,26 +12,27 @@
 use std::ffi::c_void;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
     DeleteObject, EndPaint, GetDC, GetDIBits, GetStockObject, InvalidateRect, LineTo, MoveToEx,
-    Rectangle, ReleaseDC, ScreenToClient, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW,
+    Rectangle, ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW,
     BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
     PAINTSTRUCT, R2_COPYPEN, R2_NOT, SRCCOPY, TRANSPARENT, WHITE_PEN,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DELETE, VK_END, VK_ESCAPE, VK_HOME,
-    VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
+    VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow,
-    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR, IDC_ARROW,
+    TranslateMessage, CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR,
+    IDC_ARROW,
     IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, MSG, SW_SHOW, WM_CHAR, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KILLFOCUS,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_QUIT,
     WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -90,10 +91,16 @@ struct Overlay {
     /// Text being typed (the shape that renders it + the editing state); committed to
     /// `shapes` on Enter or when the mouse does anything else.
     typing: Option<(Shape, TextInput)>,
+    /// When the typing is a re-edit, the slot in `shapes` it will be written back to. The
+    /// original stays in the list (hidden) so re-editing never changes the drawing order.
+    editing: Option<usize>,
     /// The live drag, with the last pointer position it saw.
     grabbed: Option<(Grab, (i32, i32))>,
-    /// The shape whose grips are showing — whatever a press would move or reshape.
-    hovered: Option<usize>,
+    /// The hit test under the pointer, refreshed once per mouse move. Cached because
+    /// testing text measures it through a device context, which is far too expensive to
+    /// pay for twice — once to pick the cursor and again to decide where grips go.
+    hover: Option<Target>,
+    hover_bar: bool,
     /// Set for the final compose: shapes only, no border, guides, or toolbar.
     exporting: bool,
 }
@@ -176,8 +183,10 @@ pub fn select_region(
             stroke,
             keeper: false,
             typing: None,
+            editing: None,
             grabbed: None,
-            hovered: None,
+            hover: None,
+            hover_bar: false,
             exporting: false,
         }));
 
@@ -298,7 +307,8 @@ unsafe fn register_class_once(instance: windows::Win32::Foundation::HINSTANCE) {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         let class = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
+            // CS_DBLCLKS so a double-click on placed text can reopen it for editing.
+            style: CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: instance,
             hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
@@ -458,10 +468,7 @@ unsafe fn annotate_proc(
         WM_SETCURSOR => {
             let cursor = match state.grabbed {
                 Some((grab, _)) => dragging_cursor(grab),
-                None => {
-                    let (x, y) = cursor_in_client(hwnd);
-                    hover_cursor(state, x, y)
-                }
+                None => hover_cursor(state),
             };
             SetCursor(LoadCursorW(None, cursor).unwrap_or_default());
             LRESULT(1)
@@ -493,13 +500,23 @@ unsafe fn annotate_proc(
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
+        WM_LBUTTONDBLCLK => {
+            let (x, y) = lparam_xy(lparam);
+            // The first click of the pair already placed anything being typed, but commit
+            // before looking so the index found below can never be one edit out of date.
+            commit_typing(state);
+            if let Some(i) = text_under(state, x, y) {
+                begin_editing(state, i);
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
+            // Not on text: behave exactly like an ordinary press, so a quick double-click
+            // anywhere else never silently loses its second half.
+            annotate_proc(hwnd, state, WM_LBUTTONDOWN, wparam, lparam)
+        }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lparam);
             if let Some((grab, last)) = state.grabbed {
-                state.hovered = match grab {
-                    Grab::Shape(i) | Grab::ResizeShape { shape: i, .. } => Some(i),
-                    _ => None,
-                };
                 match grab {
                     Grab::Shape(i) => move_shape(state, i, x - last.0, y - last.1),
                     Grab::Region => move_region(state, x - last.0, y - last.1),
@@ -521,9 +538,10 @@ unsafe fn annotate_proc(
                 }
                 let _ = InvalidateRect(hwnd, None, false);
             } else {
-                let was = state.hovered;
-                state.hovered = hovered_shape(state, x, y);
-                if state.hovered != was {
+                let before = grip_shape(state);
+                state.hover_bar = annotate::over_bar(&state.cells, x, y);
+                state.hover = if state.hover_bar { None } else { grab_target(state, x, y) };
+                if grip_shape(state) != before {
                     let _ = InvalidateRect(hwnd, None, false);
                 }
             }
@@ -555,7 +573,9 @@ unsafe fn annotate_proc(
         }
         WM_RBUTTONDOWN => {
             // Mouse-only undo; matches the right-click-cancels reflex from phase one.
-            if state.typing.take().is_none() {
+            if state.typing.is_some() {
+                cancel_typing(state);
+            } else {
                 undo(state);
             }
             let _ = InvalidateRect(hwnd, None, false);
@@ -579,10 +599,11 @@ unsafe fn annotate_proc(
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
             if state.typing.is_some() {
-                // While typing, letters are text — only Enter and Esc end it.
+                // While typing, letters are text. Enter adds a line, so finishing is
+                // Ctrl+Enter, a click elsewhere, or Esc to throw the text away.
                 if vk == VK_ESCAPE.0 {
-                    state.typing = None;
-                } else if vk == VK_RETURN.0 {
+                    cancel_typing(state);
+                } else if vk == VK_RETURN.0 && key_down(VK_CONTROL) {
                     commit_typing(state);
                 } else {
                     edit_typing(state, hwnd, vk);
@@ -618,13 +639,6 @@ unsafe fn annotate_proc(
     }
 }
 
-unsafe fn cursor_in_client(hwnd: HWND) -> (i32, i32) {
-    let mut p = POINT::default();
-    let _ = GetCursorPos(&mut p);
-    let _ = ScreenToClient(hwnd, &mut p);
-    (p.x, p.y)
-}
-
 /// What a press at (x, y) would grab. Handles are tested before bodies because a handle
 /// is a 9px target while a border is a whole edge — the small target has to win where the
 /// two overlap, or corners would be unreachable.
@@ -650,11 +664,16 @@ unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Target> {
     None
 }
 
-/// The shape whose grips should show: the one a press here would move or reshape.
-unsafe fn hovered_shape(state: &Overlay, x: i32, y: i32) -> Option<usize> {
-    match grab_target(state, x, y) {
-        Some(Target::ShapeHandle { shape, .. } | Target::ShapeBody(shape)) => Some(shape),
-        _ => None,
+/// The shape whose grips should show: the one being dragged, or the one a press would
+/// take hold of.
+fn grip_shape(state: &Overlay) -> Option<usize> {
+    match state.grabbed {
+        Some((Grab::Shape(i) | Grab::ResizeShape { shape: i, .. }, _)) => Some(i),
+        Some(_) => None,
+        None => match state.hover {
+            Some(Target::ShapeHandle { shape, .. } | Target::ShapeBody(shape)) => Some(shape),
+            _ => None,
+        },
     }
 }
 
@@ -684,12 +703,12 @@ fn begin_grab(state: &mut Overlay, target: Target) -> Grab {
     }
 }
 
-/// The cursor that says what a press here would do.
-unsafe fn hover_cursor(state: &Overlay, x: i32, y: i32) -> PCWSTR {
-    if annotate::over_bar(&state.cells, x, y) {
+/// The cursor that says what a press here would do, from the last hit test.
+fn hover_cursor(state: &Overlay) -> PCWSTR {
+    if state.hover_bar {
         return IDC_ARROW;
     }
-    match grab_target(state, x, y) {
+    match state.hover {
         Some(Target::ShapeHandle { shape, handle }) => {
             if state.shapes[shape].handle_is_nwse(handle) {
                 IDC_SIZENWSE
@@ -802,10 +821,16 @@ unsafe fn edit_typing(state: &mut Overlay, hwnd: HWND, vk: u16) {
             }
             _ => {}
         }
+    } else if vk == VK_RETURN.0 {
+        input.newline();
     } else if vk == VK_LEFT.0 {
         input.move_left();
     } else if vk == VK_RIGHT.0 {
         input.move_right();
+    } else if vk == VK_UP.0 {
+        input.move_up();
+    } else if vk == VK_DOWN.0 {
+        input.move_down();
     } else if vk == VK_HOME.0 {
         input.move_home();
     } else if vk == VK_END.0 {
@@ -830,12 +855,65 @@ fn redo(state: &mut Overlay) {
     state.history.redo(&mut state.shapes);
 }
 
+/// Place the text being typed. A re-edit goes back into the slot it came from, so the
+/// drawing order is unchanged; text emptied by the edit is removed instead.
 fn commit_typing(state: &mut Overlay) {
-    if let Some((t, _)) = state.typing.take() {
-        if !t.is_degenerate() {
-            push_shape(state, t);
+    let Some((shape, _)) = state.typing.take() else { return };
+    let slot = state.editing.take();
+    state.history.checkpoint(&state.shapes);
+    match slot {
+        Some(i) if i < state.shapes.len() => {
+            if shape.is_degenerate() {
+                state.shapes.remove(i);
+            } else {
+                state.shapes[i] = shape;
+            }
+        }
+        _ => {
+            if !shape.is_degenerate() {
+                state.shapes.push(shape);
+            }
         }
     }
+    // Typing that added or changed nothing should not cost an undo step.
+    state.history.forget_if_unchanged(&state.shapes);
+}
+
+/// Throw away the text being typed. A re-edit leaves the placed shape untouched, because
+/// it was never taken out of the list.
+fn cancel_typing(state: &mut Overlay) {
+    state.typing = None;
+    state.editing = None;
+}
+
+/// The placed text under the pointer, if any — what a double-click would reopen.
+unsafe fn text_under(state: &Overlay, x: i32, y: i32) -> Option<usize> {
+    if annotate::over_bar(&state.cells, x, y) {
+        return None;
+    }
+    state
+        .shapes
+        .iter()
+        .rposition(|s| s.tool == Tool::Text && s.hits_border(x, y))
+}
+
+/// Reopen placed text for editing, with the caret at its end and the toolbar showing the
+/// colour and width that text actually has.
+fn begin_editing(state: &mut Overlay, i: usize) {
+    let Some(shape) = state.shapes.get(i).cloned() else { return };
+    let mut input = TextInput::new();
+    input.text = shape.text.clone();
+    input.caret = input.text.len();
+    if let Some(c) = PALETTE.iter().position(|&c| c == shape.color) {
+        state.color = c;
+    }
+    if let Some(w) = WIDTHS.iter().position(|&w| (w - shape.width).abs() < 0.01) {
+        state.stroke = w;
+    }
+    state.grabbed = None;
+    state.tool = Tool::Text;
+    state.typing = Some((shape, input));
+    state.editing = Some(i);
 }
 
 fn apply(state: &mut Overlay, action: Action) {
@@ -879,6 +957,7 @@ unsafe fn compose(state: &Overlay) {
                 shape,
                 caret: input.caret,
                 all_selected: input.all_selected,
+                replaces: state.editing,
             }),
         );
         if state.exporting {
@@ -893,7 +972,7 @@ unsafe fn compose(state: &Overlay) {
         SelectObject(back, old_brush);
         SelectObject(back, old_pen);
         annotate::draw_handles(back, &annotate::rect_corners(state.sel));
-        if let Some(shape) = state.hovered.and_then(|i| state.shapes.get(i)) {
+        if let Some(shape) = grip_shape(state).and_then(|i| state.shapes.get(i)) {
             annotate::draw_handles(back, &shape.handle_points());
         }
         let bar = BarState {
@@ -1012,8 +1091,10 @@ pub fn render_test_frame(
             stroke: 1,
             keeper: false,
             typing: None,
+            editing: None,
             grabbed: None,
-            hovered: Some(0),
+            hover: Some(Target::ShapeBody(0)),
+            hover_bar: false,
             exporting: false,
         };
 
@@ -1023,15 +1104,20 @@ pub fn render_test_frame(
             state.dragging = false;
             state.cells = annotate::layout(sel, (shot.width, shot.height));
             state.shapes = demo_shapes(sel);
-            let mut input = TextInput::new();
-            input.paste(&"caret here".encode_utf16().collect::<Vec<u16>>());
-            for _ in 0..4 {
-                input.move_left();
+            // Re-open the demo's own text. One frame then proves multi-line drawing, the
+            // caret on the second line, and that the shape being edited is hidden rather
+            // than drawn underneath its own replacement.
+            if let Some(i) = state.shapes.iter().rposition(|s| s.tool == Tool::Text) {
+                let mut shape = state.shapes[i].clone();
+                let mut input = TextInput::new();
+                input.paste(&"Re-edited\r\nsecond line".encode_utf16().collect::<Vec<u16>>());
+                for _ in 0..4 {
+                    input.move_left();
+                }
+                shape.text = input.text.clone();
+                state.typing = Some((shape, input));
+                state.editing = Some(i);
             }
-            let mut shape =
-                Shape::new(Tool::Text, PALETTE[4], 4.0, (sel.0 + 24, sel.1 + sel.3 - 60));
-            shape.text = input.text.clone();
-            state.typing = Some((shape, input));
         }
         compose(&state);
 
@@ -1118,9 +1204,11 @@ pub fn export_test(
             stroke: 1,
             keeper: false,
             typing: None,
+            editing: None,
             grabbed: None,
             // Grips live on the way in: the export must still not contain them.
-            hovered: Some(0),
+            hover: Some(Target::ShapeBody(0)),
+            hover_bar: false,
             exporting: false,
         };
         let pixels = export_annotated(&mut state);

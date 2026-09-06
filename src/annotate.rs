@@ -212,7 +212,11 @@ impl Shape {
     /// A click that never became a drag (or text nobody typed) leaves nothing worth keeping.
     pub fn is_degenerate(&self) -> bool {
         match self.tool {
-            Tool::Text => self.text.is_empty(),
+            // Blank lines and spaces draw nothing, so they are not worth keeping either.
+            Tool::Text => self
+                .text
+                .iter()
+                .all(|&u| u == ' ' as u16 || u == '\n' as u16),
             Tool::Pen => self.pts.len() < 2,
             _ => {
                 let (a, b) = (self.pts[0], self.pts[1]);
@@ -390,9 +394,9 @@ impl History {
 // ---------------------------------------------------------------- text editing
 
 /// The text being typed, where the caret sits in it, and the one selection state.
-/// Selection is all-or-nothing (Ctrl+A); every edit happens at the caret. Indices count
-/// UTF-16 units, and each move steps over a whole surrogate pair, so a pasted emoji can
-/// never be cut in half.
+/// Selection is all-or-nothing (Ctrl+A); every edit happens at the caret. Line breaks are
+/// plain `\n` inside `text`. Indices count UTF-16 units, and each move steps over a whole
+/// surrogate pair, so a pasted emoji can never be cut in half.
 pub struct TextInput {
     pub text: Vec<u16>,
     pub caret: usize,
@@ -405,6 +409,14 @@ fn is_high_surrogate(u: u16) -> bool {
 
 fn is_low_surrogate(u: u16) -> bool {
     (0xDC00..=0xDFFF).contains(&u)
+}
+
+const NEWLINE: u16 = b'\n' as u16;
+
+/// The text split on its line breaks. Always at least one line, so empty text still has a
+/// height to put the caret in.
+pub fn lines(text: &[u16]) -> impl Iterator<Item = &[u16]> {
+    text.split(|&u| u == NEWLINE)
 }
 
 impl TextInput {
@@ -432,6 +444,39 @@ impl TextInput {
             from + 2
         } else {
             from + 1
+        }
+    }
+
+    /// Where the line holding `from` begins, and where it ends. Home and End work on the
+    /// line the caret is on, not on the whole block.
+    fn line_start(&self, from: usize) -> usize {
+        self.text[..from.min(self.text.len())]
+            .iter()
+            .rposition(|&u| u == NEWLINE)
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    fn line_end(&self, from: usize) -> usize {
+        let from = from.min(self.text.len());
+        self.text[from..]
+            .iter()
+            .position(|&u| u == NEWLINE)
+            .map(|i| from + i)
+            .unwrap_or(self.text.len())
+    }
+
+    /// Never leave the caret between the two halves of a surrogate pair — only the column
+    /// arithmetic of Up and Down can land there.
+    fn snapped(&self, at: usize) -> usize {
+        if at > 0
+            && at < self.text.len()
+            && is_high_surrogate(self.text[at - 1])
+            && is_low_surrogate(self.text[at])
+        {
+            at + 1
+        } else {
+            at
         }
     }
 
@@ -473,6 +518,11 @@ impl TextInput {
         self.text.drain(self.caret.min(self.text.len())..to);
     }
 
+    /// Enter adds a line. Ctrl+Enter is what finishes the text.
+    pub fn newline(&mut self) {
+        self.type_char(NEWLINE);
+    }
+
     /// An arrow key collapses a selection to the side it points at, the way every text
     /// field does.
     pub fn move_left(&mut self) {
@@ -486,13 +536,38 @@ impl TextInput {
     }
 
     pub fn move_home(&mut self) {
-        self.caret = 0;
+        self.caret = self.line_start(self.caret);
         self.all_selected = false;
     }
 
     pub fn move_end(&mut self) {
-        self.caret = self.text.len();
+        self.caret = self.line_end(self.caret);
         self.all_selected = false;
+    }
+
+    /// Up and Down keep the column where they can, and stop at the end of a shorter line.
+    pub fn move_up(&mut self) {
+        self.all_selected = false;
+        let start = self.line_start(self.caret);
+        if start == 0 {
+            self.caret = 0;
+            return;
+        }
+        let column = self.caret - start;
+        let previous = self.line_start(start - 1);
+        self.caret = self.snapped((previous + column).min(start - 1));
+    }
+
+    pub fn move_down(&mut self) {
+        self.all_selected = false;
+        let end = self.line_end(self.caret);
+        if end >= self.text.len() {
+            self.caret = self.text.len();
+            return;
+        }
+        let column = self.caret - self.line_start(self.caret);
+        let next = end + 1;
+        self.caret = self.snapped((next + column).min(self.line_end(next)));
     }
 
     pub fn select_all(&mut self) {
@@ -500,23 +575,24 @@ impl TextInput {
         self.caret = self.text.len();
     }
 
-    /// Clipboard text may span lines; the tool renders one line, so breaks become spaces.
+    /// Pasted line breaks are kept. CRLF, a lone CR and a lone LF all mean one break;
+    /// tabs become spaces, since nothing here expands a tab stop.
     pub fn paste(&mut self, clip: &[u16]) {
         self.replace_selection();
         let mut flat: Vec<u16> = Vec::with_capacity(clip.len());
-        let mut last_space =
-            self.caret == 0 || self.text.get(self.caret - 1).is_none_or(|&u| u == ' ' as u16);
-        for &u in clip {
-            let u = if u == '\r' as u16 || u == '\n' as u16 || u == '\t' as u16 {
-                ' ' as u16
-            } else {
-                u
-            };
-            if u == ' ' as u16 && last_space {
-                continue;
+        let mut i = 0;
+        while i < clip.len() {
+            match clip[i] {
+                u if u == '\r' as u16 => {
+                    if clip.get(i + 1) == Some(&NEWLINE) {
+                        i += 1;
+                    }
+                    flat.push(NEWLINE);
+                }
+                u if u == '\t' as u16 => flat.push(' ' as u16),
+                u => flat.push(u),
             }
-            last_space = u == ' ' as u16;
-            flat.push(u);
+            i += 1;
         }
         let at = self.caret.min(self.text.len());
         self.text.splice(at..at, flat.iter().copied());
@@ -568,13 +644,11 @@ unsafe fn text_extent(text: &[u16], width: f32) -> (i32, i32) {
     let dc = GetDC(HWND::default());
     let font = make_font(width);
     let old = SelectObject(dc, font);
-    let probe: Vec<u16> = if text.is_empty() { vec![' ' as u16] } else { text.to_vec() };
-    let mut size = SIZE::default();
-    let _ = GetTextExtentPoint32W(dc, &probe, &mut size);
+    let (w, h) = measure(dc, text, width);
     SelectObject(dc, old);
     let _ = DeleteObject(font);
     ReleaseDC(HWND::default(), dc);
-    (size.cx.max(4), size.cy.max(font_px(width)))
+    (w.max(4), h)
 }
 
 fn colorref(argb: u32) -> COLORREF {
@@ -583,22 +657,50 @@ fn colorref(argb: u32) -> COLORREF {
 }
 
 /// How the text being typed should be shown: where the caret sits, and whether the whole
-/// line is selected.
+/// block is selected.
 pub struct Typing<'a> {
     pub shape: &'a Shape,
     pub caret: usize,
     pub all_selected: bool,
+    /// The placed shape this is standing in for while it is re-edited. It keeps its slot
+    /// in the list so the drawing order never shifts, and is hidden until the edit ends.
+    pub replaces: Option<usize>,
 }
 
-/// Width of `text` in the font already selected into `hdc`, plus the line height. Empty
-/// text still has a height — that is what sizes the caret before anything is typed.
-unsafe fn measure(hdc: HDC, text: &[u16], width: f32) -> (i32, i32) {
-    if text.is_empty() {
-        return (0, font_px(width));
+unsafe fn line_width(hdc: HDC, line: &[u16]) -> i32 {
+    if line.is_empty() {
+        return 0;
     }
     let mut size = SIZE::default();
-    let _ = GetTextExtentPoint32W(hdc, text, &mut size);
-    (size.cx, size.cy)
+    let _ = GetTextExtentPoint32W(hdc, line, &mut size);
+    size.cx
+}
+
+/// One line's height in the font already selected into `hdc`. Measured from a space, so an
+/// empty line is still as tall as a full one.
+unsafe fn line_height(hdc: HDC, width: f32) -> i32 {
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &[' ' as u16], &mut size);
+    size.cy.max(font_px(width))
+}
+
+/// The widest line and the height of the whole block.
+unsafe fn measure(hdc: HDC, text: &[u16], width: f32) -> (i32, i32) {
+    let mut widest = 0;
+    let mut count = 0;
+    for line in lines(text) {
+        widest = widest.max(line_width(hdc, line));
+        count += 1;
+    }
+    (widest, line_height(hdc, width) * count)
+}
+
+/// Which line the caret is on, and how far into it in pixels.
+unsafe fn caret_position(hdc: HDC, text: &[u16], caret: usize) -> (i32, i32) {
+    let before = &text[..caret.min(text.len())];
+    let line = before.iter().filter(|&&u| u == NEWLINE).count() as i32;
+    let start = before.iter().rposition(|&u| u == NEWLINE).map(|i| i + 1).unwrap_or(0);
+    (line, line_width(hdc, &before[start..]))
 }
 
 unsafe fn draw_text(hdc: HDC, s: &Shape, typing: Option<&Typing>) {
@@ -607,20 +709,27 @@ unsafe fn draw_text(hdc: HDC, s: &Shape, typing: Option<&Typing>) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, colorref(s.color));
     let (x, y) = s.pts[0];
-    if !s.text.is_empty() {
-        let _ = TextOutW(hdc, x, y, &s.text);
+    let lh = line_height(hdc, s.width);
+    for (row, line) in lines(&s.text).enumerate() {
+        if !line.is_empty() {
+            let _ = TextOutW(hdc, x, y + row as i32 * lh, line);
+        }
     }
     if let Some(t) = typing {
-        let (w, h) = measure(hdc, &s.text, s.width);
-        if t.all_selected && w > 0 {
+        if t.all_selected {
             // Inverting the text box is the classic "everything is selected" look and
             // stays visible on any background without needing alpha.
-            let _ = PatBlt(hdc, x - 1, y, w + 2, h, DSTINVERT);
+            for (row, line) in lines(&s.text).enumerate() {
+                let w = line_width(hdc, line);
+                if w > 0 {
+                    let _ = PatBlt(hdc, x - 1, y + row as i32 * lh, w + 2, lh, DSTINVERT);
+                }
+            }
         }
         // A drawn bar rather than a "|" glyph: it lands exactly between two characters
         // instead of taking space of its own, and inverting keeps it visible anywhere.
-        let caret = measure(hdc, &s.text[..t.caret.min(s.text.len())], s.width).0;
-        let _ = PatBlt(hdc, x + caret, y, 2, h, DSTINVERT);
+        let (row, offset) = caret_position(hdc, &s.text, t.caret);
+        let _ = PatBlt(hdc, x + offset, y + row * lh, 2, lh, DSTINVERT);
     }
     SelectObject(hdc, old);
     let _ = DeleteObject(font);
@@ -713,8 +822,11 @@ pub unsafe fn draw_shapes(
     // Text after GDI+ is torn down, so the two drawing stacks never share the DC.
     let rgn = CreateRectRgn(clip.0, clip.1, clip.0 + clip.2, clip.1 + clip.3);
     SelectClipRgn(hdc, rgn);
-    for s in shapes.iter().filter(|s| s.tool == Tool::Text) {
-        draw_text(hdc, s, None);
+    let hidden = typing.as_ref().and_then(|t| t.replaces);
+    for (i, s) in shapes.iter().enumerate() {
+        if s.tool == Tool::Text && Some(i) != hidden {
+            draw_text(hdc, s, None);
+        }
     }
     if let Some(t) = typing.as_ref() {
         draw_text(hdc, t.shape, Some(t));
@@ -976,8 +1088,8 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
         }
     }
     let line = match bar.hint {
-        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
-        Hint::Typing => "typing:   Ctrl+A select all   Ctrl+C copy  Ctrl+X cut  Ctrl+V paste   arrows / Home / End move the caret   Del forward-delete   Enter place   Esc discard",
+        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text (double-click to re-edit)   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
+        Hint::Typing => "typing:   Enter new line   Ctrl+Enter done   Ctrl+A select all   Ctrl+C/X/V copy, cut, paste   arrows / Home / End move the caret   Del delete   Esc discard",
     };
     let hint: Vec<u16> = line.encode_utf16().collect();
     SetTextColor(hdc, COLORREF(0x00000000));
@@ -1157,10 +1269,10 @@ mod tests {
     }
 
     #[test]
-    fn paste_flattens_line_breaks_and_replaces_a_selection() {
+    fn paste_keeps_line_breaks_and_replaces_a_selection() {
         let mut t = TextInput::new();
         t.paste(&u("one\r\ntwo\tthree"));
-        assert_eq!(t.text, u("one two three"));
+        assert_eq!(t.text, u("one\ntwo three"), "CRLF is one break, a tab is a space");
         t.select_all();
         t.paste(&u("new"));
         assert_eq!(t.text, u("new"));
@@ -1169,11 +1281,76 @@ mod tests {
     }
 
     #[test]
-    fn paste_does_not_double_spaces_at_the_join() {
+    fn every_flavour_of_line_break_pastes_as_one() {
         let mut t = TextInput::new();
-        t.paste(&u("end "));
-        t.paste(&u(" start"));
-        assert_eq!(t.text, u("end start"));
+        t.paste(&u("a\r\nb\nc\rd"));
+        assert_eq!(t.text, u("a\nb\nc\nd"));
+        assert_eq!(lines(&t.text).count(), 4);
+    }
+
+    #[test]
+    fn enter_adds_a_line_and_the_caret_follows() {
+        let mut t = TextInput::new();
+        t.paste(&u("first"));
+        t.newline();
+        for c in u("second") {
+            t.type_char(c);
+        }
+        assert_eq!(t.text, u("first\nsecond"));
+        assert_eq!(t.caret, 12);
+        assert_eq!(lines(&t.text).count(), 2);
+        t.backspace();
+        assert_eq!(t.text, u("first\nsecon"));
+    }
+
+    #[test]
+    fn home_and_end_work_on_the_current_line() {
+        let mut t = TextInput::new();
+        t.paste(&u("abcdef\nxy"));
+        t.move_home();
+        assert_eq!(t.caret, 7, "the start of the line the caret is on, not of the text");
+        t.move_end();
+        assert_eq!(t.caret, 9);
+        t.move_left();
+        t.move_left();
+        t.move_left(); // back over the break onto line one
+        assert_eq!(t.caret, 6);
+        t.move_home();
+        assert_eq!(t.caret, 0);
+        t.move_end();
+        assert_eq!(t.caret, 6, "End stops before the break, not after it");
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_and_clamp_to_short_lines() {
+        let mut t = TextInput::new();
+        t.paste(&u("abcdef\nxy\nlong line"));
+        t.move_home(); // start of "long line"
+        assert_eq!(t.caret, 10);
+        t.move_up();
+        assert_eq!(t.caret, 7, "column 0 of the middle line");
+        t.move_up();
+        assert_eq!(t.caret, 0);
+        t.move_up();
+        assert_eq!(t.caret, 0, "already on the first line — must not panic or wrap");
+
+        t.caret = 4; // column 4 of "abcdef"
+        t.move_down();
+        assert_eq!(t.caret, 9, "clamped to the end of the shorter line");
+        t.move_down();
+        assert_eq!(t.caret, 12, "and back out to the column it started from");
+        t.move_down();
+        assert_eq!(t.caret, 19, "already on the last line — goes to the end");
+    }
+
+    #[test]
+    fn text_that_draws_nothing_is_not_worth_keeping() {
+        let mut s = Shape::new(Tool::Text, PALETTE[0], 4.0, (5, 5));
+        assert!(s.is_degenerate(), "empty");
+        s.text = u(" \n \n");
+        assert!(s.is_degenerate(), "blank lines and spaces draw nothing");
+        s.text = u("\nx");
+        assert!(!s.is_degenerate());
     }
 
     #[test]

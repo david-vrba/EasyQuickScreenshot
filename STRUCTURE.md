@@ -38,7 +38,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `src/config.rs` | `config.toml` discovery/parsing, defaults, hotkey-string → `(modifiers, vk)` parsing |
 | `src/capture.rs` | `Screenshot` (BGRA buffer + geometry), `capture_virtual_screen()` via GDI BitBlt, `crop()` |
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling; also the second (annotate) phase and flattening the drawing into the exported crop |
-| `src/annotate.rs` | Quick-annotate: shape model (rect/arrow/line/circle/pen/text), move + resize hit-testing, the one-line text editor with its caret, snapshot undo history, GDI+ anti-aliased rendering, the floating toolbar + its hit-testing and shortcuts |
+| `src/annotate.rs` | Quick-annotate: shape model (rect/arrow/line/circle/pen/text), move + resize hit-testing, the multi-line text editor with its caret, snapshot undo history, GDI+ anti-aliased rendering, the floating toolbar + its hit-testing and shortcuts |
 | `src/save.rs` | PNG encode (`png` crate, fast compression), atomic writes, timestamped filenames |
 | `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps); CF_UNICODETEXT read/write for the annotate text tool |
 | `src/tray.rs` | Tray icon add/remove (brand icon embedded via `include_bytes!`), right-click menu |

@@ -38,7 +38,9 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | | |
 |---|---|
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
-| `T` | text — click where it goes, type, `Enter`. While typing: `←` `→` `Home` `End` move the caret, `Del` deletes forward, `Ctrl+A` select all, `Ctrl+C` / `Ctrl+X` copy / cut, `Ctrl+V` paste |
+| `T` | text — click where it goes and type. `Enter` starts a new line; `Ctrl+Enter`, or a click anywhere else, places it |
+| double-click text | reopen placed text and edit it — it goes back in the same spot, same order |
+| while typing | `←` `→` `↑` `↓` `Home` `End` move the caret · `Del` deletes forward · `Ctrl+A` select all · `Ctrl+C` / `Ctrl+X` / `Ctrl+V` copy, cut, paste · `Esc` throws the text away |
 | `1`–`8` | colour — **red is the default**, and whatever you pick is still there next capture |
 | mouse wheel | stroke width / text size — also remembered |
 | hold `Shift` | perfect square / circle, or snap a line to 45° |
@@ -58,6 +60,10 @@ else on the outline to move the whole thing. The capture region itself works the
 four corners resize the shot and its edges slide it, so a selection that came out slightly
 wrong is fixed in place instead of started over. Grips are preview only — they never reach
 the file.
+
+Text is multi-line and stays editable. Double-click any text you already placed to open it
+again, with the toolbar switching to that text's own colour and size. `Esc` while editing
+leaves the original exactly as it was.
 
 It opens **inside the capture overlay**: no second window, no app launch, nothing to wait for.
 A plain `Ctrl+Alt+Q` is untouched and never shows the toolbar.
