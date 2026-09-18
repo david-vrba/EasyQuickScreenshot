@@ -983,18 +983,26 @@ fn bar_width() -> i32 {
         + BTN * 2
 }
 
-/// Place the bar under the selection, flipping above it (or inside it) when the screen
-/// edge is in the way, and clamp so it is always fully on-screen.
+/// Place the bar under the selection, flipping above it when the bottom edge is in the
+/// way, and dropping inside the top of the selection when neither fits — which is what a
+/// full-screen capture leaves. Always centred on the selection and fully on-screen.
+///
+/// Being inside the selection costs the output nothing: `compose` returns before the bar
+/// is ever drawn when exporting, so it lives in the preview only.
 pub fn layout(sel: Rect, screen: (i32, i32)) -> Vec<Cell> {
     let bw = bar_width();
-    let x = (sel.0).clamp(0, (screen.0 - bw).max(0));
+    // Centred, not left-aligned: a wide capture used to put the controls in its corner,
+    // and across several monitors that corner can be a screen away from what you are doing.
+    let x = (sel.0 + (sel.2 - bw) / 2).clamp(0, (screen.0 - bw).max(0));
     let below = sel.1 + sel.3 + 10;
     let y = if below + BAR_H + HINT_H <= screen.1 {
         below
     } else if sel.1 - BAR_H - 10 >= 0 {
         sel.1 - BAR_H - 10
     } else {
-        (screen.1 - BAR_H - HINT_H).max(0)
+        // A full-height selection. Pinned to the bottom of the screen the controls end up
+        // half under the taskbar with the hint line cut off, so sit just inside the top edge.
+        sel.1 + 10
     };
 
     let mut cells = Vec::new();
@@ -1628,6 +1636,33 @@ mod tests {
         let mut s = shape(Tool::Line, (10, 10), (20, 30));
         s.move_by(5, -5);
         assert_eq!(s.pts, vec![(15, 5), (25, 25)]);
+    }
+
+    /// The bar's own outer box, which is what has to stay on screen.
+    fn bar_box(cells: &[Cell]) -> (i32, i32, i32, i32) {
+        let (first, last) = (cells.first().unwrap(), cells.last().unwrap());
+        (
+            first.x - PAD,
+            first.y - PAD,
+            last.x + last.w + PAD,
+            first.y + CELL + PAD,
+        )
+    }
+
+    #[test]
+    fn a_full_screen_capture_puts_the_bar_inside_the_top() {
+        let screen = (1920, 1080);
+        let (x0, y0, x1, y1) = bar_box(&layout((0, 0, 1920, 1080), screen));
+        assert!(y0 >= 0 && y1 + HINT_H <= screen.1, "bar and hint both on screen");
+        assert!(y1 < screen.1 / 2, "near the top, not pinned to the bottom edge");
+        assert_eq!((x0 + x1) / 2, screen.0 / 2, "centred");
+    }
+
+    #[test]
+    fn the_bar_is_centred_on_the_selection() {
+        let cells = layout((400, 200, 900, 300), (1920, 1080));
+        let (x0, _, x1, _) = bar_box(&cells);
+        assert_eq!((x0 + x1) / 2, 400 + 900 / 2, "centred on the capture, not its left edge");
     }
 
     #[test]
