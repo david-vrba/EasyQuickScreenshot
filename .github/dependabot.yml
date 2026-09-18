@@ -6,6 +6,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Every Win32 call in the core is written against the 0.58 signatures, and each
+      # windows-rs major rewrites them (HWND -> Option<HWND> and so on). That migration is
+      # a deliberate piece of work, not a lock-file bump — a PR a week only buries the ones
+      # worth taking. Patch and minor updates still come through.
+      - dependency-name: windows
+        update-types: ["version-update:semver-major"]
 
   # Settings/gallery companion (Tauri)
   - package-ecosystem: cargo

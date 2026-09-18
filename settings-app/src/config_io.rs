@@ -216,3 +216,20 @@ fn is_valid_key(key: &str) -> bool {
     let named = matches!(key, "printscreen" | "prtscn" | "space" | "insert" | "home" | "end" | "pause");
     one_alnum || fkey || named
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole reason writing goes through `toml_edit`: a save must not strip the comments
+    /// that explain the file. Every toml_edit upgrade has to keep this true.
+    #[test]
+    fn saving_a_value_leaves_the_comments_alone() {
+        let mut doc = DEFAULT_CONFIG.parse::<DocumentMut>().expect("default config");
+        doc["quick_hotkey"] = value("ctrl+alt+w");
+        let written = doc.to_string();
+        assert!(written.contains("ctrl+alt+w"), "the new value is written");
+        assert!(written.contains("# Quick shot:"), "the comments survive");
+        assert!(written.contains("#   \"cursor\""), "even the last one");
+    }
+}

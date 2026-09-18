@@ -12,7 +12,7 @@ pub fn request_reload() {
     unsafe {
         if let Ok(hwnd) = FindWindowW(w!("EQS_MAIN"), None) {
             if !hwnd.is_invalid() {
-                let _ = PostMessageW(hwnd, WM_EQS_RELOAD, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(Some(hwnd), WM_EQS_RELOAD, WPARAM(0), LPARAM(0));
             }
         }
     }

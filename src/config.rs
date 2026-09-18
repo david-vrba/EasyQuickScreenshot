@@ -212,3 +212,31 @@ fn parse_key(key: &str) -> Option<u32> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `RawConfig` denies unknown fields, so a key that lives in the shipped default but not
+    /// in the struct makes every first run fail to read the file the app just wrote itself.
+    #[test]
+    fn the_config_the_app_writes_on_first_run_parses() {
+        let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).expect("default config");
+        assert_eq!(raw.quick_hotkey, "ctrl+alt+q");
+        assert_eq!(raw.annotate_hotkey, "ctrl+shift+alt+q");
+        assert_eq!(raw.crosshair_style, "lines");
+        assert!(raw.copy_to_clipboard);
+    }
+
+    /// The example is what people copy by hand, so it has to stay in step with the default.
+    #[test]
+    fn the_example_config_offers_every_hotkey() {
+        let example: RawConfig =
+            toml::from_str(include_str!("../config.example.toml")).expect("config.example.toml");
+        let default: RawConfig = toml::from_str(DEFAULT_CONFIG).expect("default config");
+        assert_eq!(example.quick_hotkey, default.quick_hotkey);
+        assert_eq!(example.save_hotkey, default.save_hotkey);
+        assert_eq!(example.folder_hotkey, default.folder_hotkey);
+        assert_eq!(example.annotate_hotkey, default.annotate_hotkey);
+    }
+}
