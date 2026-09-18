@@ -45,7 +45,38 @@ struct App {
     config_override: Option<String>,
 }
 
+/// A panic cannot unwind out of a window procedure, so Rust aborts and the tray icon
+/// just disappears leaving nothing written down. Record the reason next to the exe first:
+/// the panic message carries its own file and line, which is what makes a crash reportable.
+fn install_panic_log() {
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        use windows::Win32::System::SystemInformation::GetLocalTime;
+        let Ok(exe) = std::env::current_exe() else { return };
+        let t = unsafe { GetLocalTime() };
+        let entry = format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}  eqs {}\n{}\n\n",
+            t.wYear,
+            t.wMonth,
+            t.wDay,
+            t.wHour,
+            t.wMinute,
+            t.wSecond,
+            env!("CARGO_PKG_VERSION"),
+            info,
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(exe.with_file_name("eqs-panic.log"))
+        {
+            let _ = f.write_all(entry.as_bytes());
+        }
+    }));
+}
+
 fn main() {
+    install_panic_log();
     let args: Vec<String> = std::env::args().collect();
     let config_override = arg_value(&args, "--config");
 
@@ -372,6 +403,7 @@ fn headless_shoot(rest: &[String]) -> i32 {
     }
 }
 
+
 /// eqs --render-test SX SY W H (lines|cursor) out.png [annotate|export] — draws one overlay frame (as if
 /// dragging from (SX,SY) to (SX+W,SY+H), in output-image/buffer coordinates — NOT
 /// virtual-screen coordinates, since the output PNG IS the buffer) over a real capture,
@@ -418,5 +450,23 @@ fn headless_render_test(rest: &[String]) -> i32 {
     match save::write_png_atomic(std::path::Path::new(&rest[5]), &bgra, shot.width, shot.height) {
         Ok(()) => 0,
         Err(_) => 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `set_hook` is process-wide, so this replaces the test harness's own hook. Harmless
+    /// while every other test passes, and this is the only way to prove a crash leaves a
+    /// trace without shipping a flag that deliberately crashes the app.
+    #[test]
+    fn a_panic_is_written_down_instead_of_vanishing() {
+        super::install_panic_log();
+        let log = std::env::current_exe().unwrap().with_file_name("eqs-panic.log");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::panic::catch_unwind(|| panic!("panic-log self check"));
+        let body = std::fs::read_to_string(&log).expect("the hook must have written a file");
+        assert!(body.contains("panic-log self check"), "the reason: {}", body);
+        assert!(body.contains("src\\main.rs"), "and where it happened: {}", body);
+        let _ = std::fs::remove_file(&log);
     }
 }

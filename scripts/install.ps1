@@ -44,14 +44,32 @@ if ($ui) {
     Invoke-WebRequest $ui.browser_download_url -OutFile (Join-Path $Dir 'eqs-settings.exe')
 }
 
-# 3. Optional: start on login (opt-in — no silent registry changes).
+# 3. Start Menu shortcuts. Without these the app is invisible to Windows Search and
+# PowerToys Run — autostart lives in the registry and leaves nothing to search for.
+$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$shell = New-Object -ComObject WScript.Shell
+$link = $shell.CreateShortcut((Join-Path $startMenu 'EasyQuickScreenshot.lnk'))
+$link.TargetPath = $exePath
+$link.WorkingDirectory = $Dir
+$link.Description = 'Instant region screenshots'
+$link.Save()
+if ($ui) {
+    $link = $shell.CreateShortcut((Join-Path $startMenu 'EasyQuickScreenshot Settings.lnk'))
+    $link.TargetPath = Join-Path $Dir 'eqs-settings.exe'
+    $link.WorkingDirectory = $Dir
+    $link.Description = 'EasyQuickScreenshot hotkeys and folders'
+    $link.Save()
+}
+Write-Host "  added to the Start Menu (type 'screenshot' to find it)."
+
+# 4. Optional: start on login (opt-in — no silent registry changes).
 if ($Autostart) {
     Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
         -Name 'EasyQuickScreenshot' -Value "`"$exePath`""
     Write-Host "  registered to start when you log in."
 }
 
-# 4. Launch it.
+# 5. Launch it.
 Start-Process $exePath
 
 Write-Host ""

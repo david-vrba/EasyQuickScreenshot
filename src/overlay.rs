@@ -87,6 +87,9 @@ struct Overlay {
     tool: Tool,
     color: usize,
     stroke: usize,
+    /// Fill the next rectangle or circle. Deliberately not remembered between captures:
+    /// a solid block appearing over a shot you did not mean to cover is worse than a keypress.
+    fill: bool,
     keeper: bool,
     /// Text being typed (the shape that renders it + the editing state); committed to
     /// `shapes` on Enter or when the mouse does anything else.
@@ -181,6 +184,7 @@ pub fn select_region(
             tool: Tool::Rect,
             color,
             stroke,
+            fill: false,
             keeper: false,
             typing: None,
             editing: None,
@@ -488,7 +492,9 @@ unsafe fn annotate_proc(
                     SetCapture(hwnd);
                 } else {
                     let p = clamp_to(state.sel, x, y);
-                    let shape = Shape::new(state.tool, PALETTE[state.color], WIDTHS[state.stroke], p);
+                    let mut shape =
+                        Shape::new(state.tool, PALETTE[state.color], WIDTHS[state.stroke], p);
+                    shape.filled = state.fill;
                     if state.tool == Tool::Text {
                         state.typing = Some((shape, TextInput::new()));
                     } else {
@@ -709,13 +715,14 @@ fn hover_cursor(state: &Overlay) -> PCWSTR {
         return IDC_ARROW;
     }
     match state.hover {
-        Some(Target::ShapeHandle { shape, handle }) => {
-            if state.shapes[shape].handle_is_nwse(handle) {
-                IDC_SIZENWSE
-            } else {
-                IDC_SIZENESW
-            }
-        }
+        // `hover` is last mouse move's hit test, and undo can have removed that shape
+        // since. Indexing it would panic, and a panic in a window procedure aborts the
+        // whole process — so this reads through `get` and falls back.
+        Some(Target::ShapeHandle { shape, handle }) => match state.shapes.get(shape) {
+            Some(s) if s.handle_is_nwse(handle) => IDC_SIZENWSE,
+            Some(_) => IDC_SIZENESW,
+            None => IDC_CROSS,
+        },
         Some(Target::RegionHandle(corner)) => {
             if corner == 0 || corner == 2 {
                 IDC_SIZENWSE
@@ -848,10 +855,12 @@ fn push_shape(state: &mut Overlay, shape: Shape) {
 
 fn undo(state: &mut Overlay) {
     state.active = None;
+    state.hover = None; // the shapes it pointed at are not these shapes any more
     state.history.undo(&mut state.shapes);
 }
 
 fn redo(state: &mut Overlay) {
+    state.hover = None;
     state.history.redo(&mut state.shapes);
 }
 
@@ -859,6 +868,7 @@ fn redo(state: &mut Overlay) {
 /// drawing order is unchanged; text emptied by the edit is removed instead.
 fn commit_typing(state: &mut Overlay) {
     let Some((shape, _)) = state.typing.take() else { return };
+    state.hover = None; // this can remove a shape, which would strand the cached hit test
     let slot = state.editing.take();
     state.history.checkpoint(&state.shapes);
     match slot {
@@ -921,6 +931,7 @@ fn apply(state: &mut Overlay, action: Action) {
         Action::Pick(t) => state.tool = t,
         Action::Color(i) => state.color = i,
         Action::Width(i) => state.stroke = i,
+        Action::ToggleFill => state.fill = !state.fill,
         Action::Commit { keeper } => {
             state.keeper = keeper;
             state.done = true;
@@ -979,6 +990,7 @@ unsafe fn compose(state: &Overlay) {
             tool: state.tool,
             color: state.color,
             width: state.stroke,
+            fill: state.fill,
             hint: if state.typing.is_some() { Hint::Typing } else { Hint::Drawing },
         };
         annotate::draw_toolbar(back, &state.cells, &bar);
@@ -1089,6 +1101,7 @@ pub fn render_test_frame(
             tool: Tool::Rect,
             color: 0,
             stroke: 1,
+            fill: false,
             keeper: false,
             typing: None,
             editing: None,
@@ -1202,6 +1215,7 @@ pub fn export_test(
             tool: Tool::Rect,
             color: 0,
             stroke: 1,
+            fill: false,
             keeper: false,
             typing: None,
             editing: None,
@@ -1242,8 +1256,10 @@ fn demo_shapes((sx, sy, sw, sh): Rect) -> Vec<Shape> {
         .collect();
     let mut text = Shape::new(Tool::Text, PALETTE[0], 4.0, (at(5), top));
     text.text = "Ducky!".encode_utf16().collect();
+    let mut filled = two(Tool::Rect, PALETTE[0], 0, top, bot);
+    filled.filled = true; // proves the fill path renders, and that it is solid
     vec![
-        two(Tool::Rect, PALETTE[0], 0, top, bot),
+        filled,
         two(Tool::Arrow, PALETTE[0], 1, bot, top),
         two(Tool::Line, PALETTE[4], 2, bot, top),
         two(Tool::Circle, PALETTE[3], 3, top, bot),

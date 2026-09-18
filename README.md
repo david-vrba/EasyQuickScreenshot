@@ -38,6 +38,7 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | | |
 |---|---|
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
+| `F` | fill — the next rectangle or circle is **solid** in the current colour. Pick black, drag over a password, and it is gone. Off again each capture |
 | `T` | text — click where it goes and type. `Enter` starts a new line; `Ctrl+Enter`, or a click anywhere else, places it |
 | double-click text | reopen placed text and edit it — it goes back in the same spot, same order |
 | while typing | `←` `→` `↑` `↓` `Home` `End` move the caret · `Del` deletes forward · `Ctrl+A` select all · `Ctrl+C` / `Ctrl+X` / `Ctrl+V` copy, cut, paste · `Esc` throws the text away |
@@ -151,6 +152,9 @@ crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden
 - **Hotkey already taken?** You get one warning at startup naming the conflicting binding — rebind and hit *Reload config*.
 - **What it won't capture:** UAC prompts and the lock screen (Windows forbids it), and some exclusive-fullscreen games. Windowed/borderless games are fine.
 - If a capture fails you get a message box; if you see nothing, it worked. Silence is the feature.
+
+If the tray icon ever disappears on its own, look for **`eqs-panic.log`** next to `eqs.exe`.
+A crash writes the reason and the exact line there before the process dies.
 
 ## Contributing
 

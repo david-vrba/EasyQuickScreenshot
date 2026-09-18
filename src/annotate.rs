@@ -15,7 +15,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Graphics::GdiPlus::{
     CombineModeReplace, FillModeAlternate, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill,
     GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen, GdipDrawCurveI, GdipDrawEllipseI,
-    GdipDrawLineI, GdipDrawLinesI, GdipDrawRectangleI, GdipFillPolygonI, GdipFillRectangleI,
+    GdipDrawLineI, GdipDrawLinesI, GdipDrawRectangleI, GdipFillEllipseI, GdipFillPolygonI,
+    GdipFillRectangleI,
     GdipSetClipRectI, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
     GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPen,
     LineCapRound, LineJoinRound, Point, SmoothingModeAntiAlias, UnitPixel,
@@ -101,12 +102,15 @@ pub struct Shape {
     pub pts: Vec<(i32, i32)>,
     /// UTF-16 so it can go straight to TextOutW. Empty for everything but Text.
     pub text: Vec<u16>,
+    /// Solid inside, in the same colour. Rectangles and circles only — the tool that
+    /// blacks out a password before you share the shot.
+    pub filled: bool,
 }
 
 impl Shape {
     pub fn new(tool: Tool, color: u32, width: f32, at: (i32, i32)) -> Shape {
         let pts = if tool == Tool::Text { vec![at] } else { vec![at, at] };
-        Shape { tool, color, width, pts, text: Vec::new() }
+        Shape { tool, color, width, pts, text: Vec::new(), filled: false }
     }
 
     /// Re-point the shape being dragged. `constrain` is Shift: square, circle, or 45°.
@@ -261,7 +265,11 @@ impl Shape {
                 .windows(2)
                 .any(|w| segment_distance(w[0], w[1], (x, y)) <= tol),
             Tool::Rect => {
-                let corners = rect_corners(bounds_of(self.pts[0], self.pts[1]));
+                let (rx, ry, rw, rh) = bounds_of(self.pts[0], self.pts[1]);
+                if self.filled && x >= rx && x <= rx + rw && y >= ry && y <= ry + rh {
+                    return true;
+                }
+                let corners = rect_corners((rx, ry, rw, rh));
                 (0..4).any(|i| segment_distance(corners[i], corners[(i + 1) % 4], (x, y)) <= tol)
             }
             Tool::Circle => {
@@ -271,6 +279,9 @@ impl Shape {
                 // Normalised radial distance: 1.0 is exactly on the ellipse. Scaled back by the
                 // smaller radius so the tolerance is roughly in pixels.
                 let r = (((x as f64 - cx) / a).powi(2) + ((y as f64 - cy) / b).powi(2)).sqrt();
+                if self.filled && r <= 1.0 {
+                    return true;
+                }
                 (r - 1.0).abs() * a.min(b) <= tol
             }
         }
@@ -876,10 +887,16 @@ unsafe fn draw_one(g: *mut GpGraphics, s: &Shape) {
         }
         Tool::Rect => {
             let (x, y, w, h) = bounds_of(s.pts[0], s.pts[1]);
+            if s.filled {
+                with_brush(s.color, |b| GdipFillRectangleI(g, b, x, y, w, h));
+            }
             with_pen(s.color, s.width, |pen| GdipDrawRectangleI(g, pen, x, y, w, h));
         }
         Tool::Circle => {
             let (x, y, w, h) = bounds_of(s.pts[0], s.pts[1]);
+            if s.filled {
+                with_brush(s.color, |b| GdipFillEllipseI(g, b, x, y, w, h));
+            }
             with_pen(s.color, s.width, |pen| GdipDrawEllipseI(g, pen, x, y, w, h));
         }
         Tool::Arrow => draw_arrow(g, s),
@@ -924,6 +941,8 @@ pub enum Action {
     Pick(Tool),
     Color(usize),
     Width(usize),
+    /// Solid inside for the next rectangle or circle.
+    ToggleFill,
     /// `keeper` = a timestamped file in saved/ (the Save mode); otherwise temp.png (Quick).
     Commit { keeper: bool },
 }
@@ -958,6 +977,8 @@ fn bar_width() -> i32 {
         + SWATCH * PALETTE.len() as i32
         + GAP
         + WCELL * WIDTHS.len() as i32
+        + GAP
+        + CELL
         + GAP
         + BTN * 2
 }
@@ -994,6 +1015,8 @@ pub fn layout(sel: Rect, screen: (i32, i32)) -> Vec<Cell> {
         cx += WCELL;
     }
     cx += GAP;
+    cells.push(Cell { x: cx, y: cy, w: CELL, h: CELL, action: Action::ToggleFill });
+    cx += CELL + GAP;
     cells.push(Cell { x: cx, y: cy, w: BTN, h: CELL, action: Action::Commit { keeper: false } });
     cx += BTN;
     cells.push(Cell { x: cx, y: cy, w: BTN, h: CELL, action: Action::Commit { keeper: true } });
@@ -1026,6 +1049,7 @@ pub struct BarState {
     pub tool: Tool,
     pub color: usize,
     pub width: usize,
+    pub fill: bool,
     pub hint: Hint,
 }
 
@@ -1045,7 +1069,8 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
                 (cell.action, bar.tool),
                 (Action::Pick(t), cur) if t == cur
             ) || cell.action == Action::Color(bar.color)
-                || cell.action == Action::Width(bar.width);
+                || cell.action == Action::Width(bar.width)
+                || (cell.action == Action::ToggleFill && bar.fill);
             if selected {
                 with_brush(0x40FFFFFF, |b| {
                     GdipFillRectangleI(g, b, cell.x, cell.y - 2, cell.w, cell.h + 4)
@@ -1072,6 +1097,10 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
                         )
                     });
                 }
+                Action::ToggleFill => {
+                    let (fx, fy, fw, fh) = (cell.x + 7, cell.y + 7, cell.w - 14, cell.h - 14);
+                    with_brush(0xFFFFFFFF, |b| GdipFillRectangleI(g, b, fx, fy, fw, fh));
+                }
                 Action::Commit { .. } => {}
             }
         }
@@ -1088,7 +1117,7 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
         }
     }
     let line = match bar.hint {
-        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text (double-click to re-edit)   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
+        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text (double-click to re-edit)   F fill   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
         Hint::Typing => "typing:   Enter new line   Ctrl+Enter done   Ctrl+A select all   Ctrl+C/X/V copy, cut, paste   arrows / Home / End move the caret   Del delete   Esc discard",
     };
     let hint: Vec<u16> = line.encode_utf16().collect();
@@ -1115,6 +1144,7 @@ unsafe fn draw_tool_glyph(g: *mut GpGraphics, tool: Tool, c: &Cell) {
                 width: 1.6,
                 pts: vec![(x, y + h), (x + w, y)],
                 text: Vec::new(),
+                filled: false,
             },
         ),
         Tool::Pen => {
@@ -1142,6 +1172,7 @@ pub fn key_action(vk: u16) -> Option<Action> {
         'C' => Some(Action::Pick(Tool::Circle)),
         'P' => Some(Action::Pick(Tool::Pen)),
         'T' => Some(Action::Pick(Tool::Text)),
+        'F' => Some(Action::ToggleFill),
         c @ '1'..='8' => Some(Action::Color(c as usize - '1' as usize)),
         _ => None,
     }
@@ -1203,6 +1234,25 @@ mod tests {
             assert!(s.hits_border(200, 203), "just outside the bottom edge");
             assert!(!s.hits_border(200, 150), "hollow interior must not grab");
             assert!(!s.hits_border(400, 150), "far away");
+        }
+    }
+
+    #[test]
+    fn a_filled_shape_grabs_by_its_middle_too() {
+        let mut r = shape(Tool::Rect, (100, 100), (300, 200));
+        unsafe { assert!(!r.hits_border(200, 150), "hollow: the middle grabs nothing") };
+        r.filled = true;
+        unsafe {
+            assert!(r.hits_border(200, 150), "solid: the middle is the shape now");
+            assert!(r.hits_border(100, 150), "and the outline still grabs");
+            assert!(!r.hits_border(400, 150), "but outside is still outside");
+        }
+        let mut c = shape(Tool::Circle, (0, 0), (200, 100));
+        unsafe { assert!(!c.hits_border(100, 50)) };
+        c.filled = true;
+        unsafe {
+            assert!(c.hits_border(100, 50), "centre of a filled ellipse");
+            assert!(!c.hits_border(10, 10), "a corner of its box is outside the ellipse");
         }
     }
 

@@ -10,7 +10,8 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   the capture overlay (no second window), red by default; drag any shape or the whole region
   by its border to move it and by a corner to resize it; undo/redo covers every edit; the
   colour and width you picked are still set next capture; text is multi-line and can be
-  re-opened by double-clicking it; `Enter` = quick, `Shift+Enter` = save
+  re-opened by double-clicking it; `F` fills a rectangle or circle solid, for blacking
+  something out; `Enter` = quick, `Shift+Enter` = save
 - `Ctrl+Shift+Alt+E` — open the current save folder
 - No dimming, no flash, no shutter; overlay can't leak into the shot
 - Multi-monitor + mixed-DPI selection
