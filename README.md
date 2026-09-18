@@ -53,9 +53,11 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | `Shift+Enter` or **SAVE** | write a timestamped copy in `shots/saved/` — same as a save |
 | `Esc` | cancel the current shape, again to abort |
 
-The toolbar sits centred under your selection, flips above it near the bottom of the
-screen, and drops just inside the top edge when neither fits — which is what a full-screen
-capture leaves. It is drawn in the preview only, so wherever it sits it is never in the file.
+The toolbar sits centred under your selection, flips above it near the bottom, and drops
+just inside the top edge when neither fits — which is what a full-screen capture leaves.
+It is placed against the monitor you are capturing, not the whole desktop, so it stays
+reachable on a multi-monitor setup where the screens are different heights. It is drawn in
+the preview only, so wherever it sits it is never in the file.
 
 Every tool is also a button on the toolbar, so you never have to remember a key. Shapes are
 drawn stroke-only — nothing is ever filled in over your screenshot.

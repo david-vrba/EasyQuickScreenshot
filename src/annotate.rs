@@ -985,24 +985,30 @@ fn bar_width() -> i32 {
 
 /// Place the bar under the selection, flipping above it when the bottom edge is in the
 /// way, and dropping inside the top of the selection when neither fits — which is what a
-/// full-screen capture leaves. Always centred on the selection and fully on-screen.
+/// full-screen capture leaves. Always centred on the selection.
+///
+/// `screen` is the monitor the selection is on, not the whole virtual desktop. Those are
+/// different rectangles the moment two monitors differ in height or sit at different
+/// offsets: measured against the desktop, "it fits below" can be true and still place the
+/// bar past the bottom of a shorter monitor, on a band of the desktop no display covers.
 ///
 /// Being inside the selection costs the output nothing: `compose` returns before the bar
 /// is ever drawn when exporting, so it lives in the preview only.
-pub fn layout(sel: Rect, screen: (i32, i32)) -> Vec<Cell> {
+pub fn layout(sel: Rect, screen: Rect) -> Vec<Cell> {
     let bw = bar_width();
+    let (mx, my, mw, mh) = screen;
     // Centred, not left-aligned: a wide capture used to put the controls in its corner,
     // and across several monitors that corner can be a screen away from what you are doing.
-    let x = (sel.0 + (sel.2 - bw) / 2).clamp(0, (screen.0 - bw).max(0));
+    let x = (sel.0 + (sel.2 - bw) / 2).clamp(mx, (mx + mw - bw).max(mx));
     let below = sel.1 + sel.3 + 10;
-    let y = if below + BAR_H + HINT_H <= screen.1 {
+    let y = if below + BAR_H + HINT_H <= my + mh {
         below
-    } else if sel.1 - BAR_H - 10 >= 0 {
+    } else if sel.1 - BAR_H - 10 >= my {
         sel.1 - BAR_H - 10
     } else {
-        // A full-height selection. Pinned to the bottom of the screen the controls end up
-        // half under the taskbar with the hint line cut off, so sit just inside the top edge.
-        sel.1 + 10
+        // A full-height selection. Pinned to the bottom edge the controls end up half under
+        // the taskbar with the hint cut off, so sit just inside the top of the capture.
+        (sel.1 + 10).max(my + 10)
     };
 
     let mut cells = Vec::new();
@@ -1649,39 +1655,55 @@ mod tests {
         )
     }
 
+    /// Every placement has to land on the monitor being captured, hint line included.
+    fn assert_on(monitor: Rect, cells: &[Cell]) {
+        let (x0, y0, x1, y1) = bar_box(cells);
+        let (mx, my, mw, mh) = monitor;
+        assert!(x0 >= mx, "off the left of the monitor");
+        assert!(x1 <= mx + mw, "off the right of the monitor");
+        assert!(y0 >= my, "above the top of the monitor");
+        assert!(y1 + HINT_H <= my + mh, "the hint line falls off the bottom");
+    }
+
     #[test]
     fn a_full_screen_capture_puts_the_bar_inside_the_top() {
-        let screen = (1920, 1080);
-        let (x0, y0, x1, y1) = bar_box(&layout((0, 0, 1920, 1080), screen));
-        assert!(y0 >= 0 && y1 + HINT_H <= screen.1, "bar and hint both on screen");
-        assert!(y1 < screen.1 / 2, "near the top, not pinned to the bottom edge");
-        assert_eq!((x0 + x1) / 2, screen.0 / 2, "centred");
+        let screen = (0, 0, 1920, 1080);
+        let cells = layout(screen, screen);
+        assert_on(screen, &cells);
+        let (x0, _, x1, y1) = bar_box(&cells);
+        assert!(y1 < 1080 / 2, "near the top, not pinned to the bottom edge");
+        assert_eq!((x0 + x1) / 2, 1920 / 2, "centred");
+    }
+
+    #[test]
+    fn a_shorter_monitor_keeps_the_bar_on_itself() {
+        // David's desktop: a 2560x1440 primary at (0,0) with two 1080-tall monitors either
+        // side, so the virtual desktop is 1440 tall while a side monitor ends 178px short of
+        // that. Measured against the desktop, "it fits below" was true and put the bar on a
+        // band no display covers, which is what made the controls vanish.
+        for monitor in [(0, 182, 1920, 1080), (4480, 174, 1920, 1080)] {
+            assert_on(monitor, &layout(monitor, monitor));
+        }
     }
 
     #[test]
     fn the_bar_is_centred_on_the_selection() {
-        let cells = layout((400, 200, 900, 300), (1920, 1080));
+        let cells = layout((400, 200, 900, 300), (0, 0, 1920, 1080));
         let (x0, _, x1, _) = bar_box(&cells);
         assert_eq!((x0 + x1) / 2, 400 + 900 / 2, "centred on the capture, not its left edge");
     }
 
     #[test]
     fn toolbar_stays_on_screen_when_the_selection_hugs_an_edge() {
-        let screen = (1920, 1080);
+        let screen = (0, 0, 1920, 1080);
         for sel in [(0, 0, 100, 100), (1900, 1040, 20, 40), (960, 540, 400, 300)] {
-            let cells = layout(sel, screen);
-            let first = cells.first().unwrap();
-            let last = cells.last().unwrap();
-            assert!(first.x - PAD >= 0, "bar off the left for {:?}", sel);
-            assert!(last.x + last.w + PAD <= screen.0, "bar off the right for {:?}", sel);
-            assert!(first.y - PAD >= 0, "bar off the top for {:?}", sel);
-            assert!(first.y + CELL + PAD <= screen.1, "bar off the bottom for {:?}", sel);
+            assert_on(screen, &layout(sel, screen));
         }
     }
 
     #[test]
     fn every_cell_is_reachable_by_click() {
-        let cells = layout((100, 100, 800, 400), (1920, 1080));
+        let cells = layout((100, 100, 800, 400), (0, 0, 1920, 1080));
         for c in &cells {
             let hit = hit_test(&cells, c.x + c.w / 2, c.y + c.h / 2);
             assert!(hit.is_some(), "cell not hittable at its own centre");

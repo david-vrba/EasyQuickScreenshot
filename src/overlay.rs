@@ -12,10 +12,11 @@
 use std::ffi::c_void;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
-    DeleteObject, EndPaint, GetDC, GetDIBits, GetStockObject, InvalidateRect, LineTo, MoveToEx,
+    DeleteObject, EndPaint, GetDC, GetDIBits, GetMonitorInfoW, GetStockObject, InvalidateRect,
+    LineTo, MonitorFromPoint, MoveToEx, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     Rectangle, ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW,
     BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
@@ -69,6 +70,9 @@ struct Overlay {
     bright_dc: HDC,
     width: i32,
     height: i32,
+    /// Where the captured buffer sits on the virtual desktop. Buffer coordinates plus this
+    /// are screen coordinates, which is what the monitor lookup needs.
+    origin: (i32, i32),
     style: CrosshairStyle,
     dragging: bool,
     start: (i32, i32),
@@ -168,6 +172,7 @@ pub fn select_region(
             bright_dc,
             width: shot.width,
             height: shot.height,
+            origin: (shot.origin_x, shot.origin_y),
             style,
             dragging: false,
             start: (0, 0),
@@ -423,7 +428,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 // Second phase in the same window: freeze the region and raise the bar.
                 state.dragging = false;
                 state.sel = (x, y, w, h);
-                state.cells = annotate::layout(state.sel, (state.width, state.height));
+                state.cells = annotate::layout(state.sel, monitor_rect(state, state.sel));
                 state.phase = Phase::Annotate;
                 let _ = InvalidateRect(hwnd, None, false);
             } else {
@@ -670,6 +675,32 @@ unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Target> {
     None
 }
 
+/// The monitor the selection sits on, in buffer coordinates. The toolbar is placed
+/// against this rather than the whole virtual desktop, because those differ as soon as two
+/// monitors have different heights or vertical offsets — and then a bar that "fits below"
+/// the capture can land on a band of desktop no display covers.
+unsafe fn monitor_rect(state: &Overlay, sel: Rect) -> Rect {
+    let centre = POINT {
+        x: state.origin.0 + sel.0 + sel.2 / 2,
+        y: state.origin.1 + sel.1 + sel.3 / 2,
+    };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let monitor = MonitorFromPoint(centre, MONITOR_DEFAULTTONEAREST);
+    if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+        return (0, 0, state.width, state.height);
+    }
+    let r = info.rcMonitor;
+    (
+        r.left - state.origin.0,
+        r.top - state.origin.1,
+        r.right - r.left,
+        r.bottom - r.top,
+    )
+}
+
 /// The shape whose grips should show: the one being dragged, or the one a press would
 /// take hold of.
 fn grip_shape(state: &Overlay) -> Option<usize> {
@@ -750,13 +781,13 @@ fn dragging_cursor(grab: Grab) -> PCWSTR {
     }
 }
 
-fn move_region(state: &mut Overlay, dx: i32, dy: i32) {
+unsafe fn move_region(state: &mut Overlay, dx: i32, dy: i32) {
     let (sx, sy, sw, sh) = state.sel;
     let nx = (sx + dx).clamp(0, (state.width - sw).max(0));
     let ny = (sy + dy).clamp(0, (state.height - sh).max(0));
     state.sel = (nx, ny, sw, sh);
     state.result = Some(state.sel);
-    state.cells = annotate::layout(state.sel, (state.width, state.height));
+    state.cells = annotate::layout(state.sel, monitor_rect(state, state.sel));
 }
 
 unsafe fn move_shape(state: &mut Overlay, i: usize, dx: i32, dy: i32) {
@@ -791,7 +822,7 @@ fn resize_shape(
 
 /// Move one corner of the capture region and leave the opposite one where it is. Shapes
 /// stay put: the region simply keeps or drops them, which is what the clipping already does.
-fn resize_region(state: &mut Overlay, anchor: (i32, i32), x: i32, y: i32) {
+unsafe fn resize_region(state: &mut Overlay, anchor: (i32, i32), x: i32, y: i32) {
     let x = x.clamp(0, state.width);
     let y = y.clamp(0, state.height);
     let r = annotate::rect_from(anchor, x, y);
@@ -804,7 +835,7 @@ fn resize_region(state: &mut Overlay, anchor: (i32, i32), x: i32, y: i32) {
         h,
     );
     state.result = Some(state.sel);
-    state.cells = annotate::layout(state.sel, (state.width, state.height));
+    state.cells = annotate::layout(state.sel, monitor_rect(state, state.sel));
 }
 
 /// One keystroke inside the text tool: the clipboard keys, the caret keys, forward delete.
@@ -1085,6 +1116,7 @@ pub fn render_test_frame(
             bright_dc,
             width: shot.width,
             height: shot.height,
+            origin: (shot.origin_x, shot.origin_y),
             style,
             dragging: true,
             start,
@@ -1115,7 +1147,7 @@ pub fn render_test_frame(
             // One of every tool, so a single frame proves the whole render path.
             state.phase = Phase::Annotate;
             state.dragging = false;
-            state.cells = annotate::layout(sel, (shot.width, shot.height));
+            state.cells = annotate::layout(sel, monitor_rect(&state, sel));
             state.shapes = demo_shapes(sel);
             // Re-open the demo's own text. One frame then proves multi-line drawing, the
             // caret on the second line, and that the shape being edited is hidden rather
@@ -1199,6 +1231,7 @@ pub fn export_test(
             bright_dc,
             width: shot.width,
             height: shot.height,
+            origin: (shot.origin_x, shot.origin_y),
             style: CrosshairStyle::Lines,
             dragging: false,
             start,
@@ -1208,7 +1241,7 @@ pub fn export_test(
             annotate: true,
             phase: Phase::Annotate,
             sel,
-            cells: annotate::layout(sel, (shot.width, shot.height)),
+            cells: Vec::new(),
             shapes: demo_shapes(sel),
             history: History::new(),
             active: None,
@@ -1225,6 +1258,7 @@ pub fn export_test(
             hover_bar: false,
             exporting: false,
         };
+        state.cells = annotate::layout(sel, monitor_rect(&state, sel));
         let pixels = export_annotated(&mut state);
 
         SelectObject(bright_dc, old_bright);
