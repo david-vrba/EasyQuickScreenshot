@@ -1,17 +1,17 @@
 {
-    "version": "0.7.0",
+    "version": "0.7.1",
     "description": "Instant region screenshots for Windows — hotkey, crosshair, drag, done. No flash, no shutter, no folder bloat.",
     "homepage": "https://github.com/david-vrba/EasyQuickScreenshot",
     "license": "MIT",
     "architecture": {
         "64bit": {
             "url": [
-                "https://github.com/david-vrba/EasyQuickScreenshot/releases/download/v0.7.0/eqs.exe",
-                "https://github.com/david-vrba/EasyQuickScreenshot/releases/download/v0.7.0/eqs-settings.exe"
+                "https://github.com/david-vrba/EasyQuickScreenshot/releases/download/v0.7.1/eqs.exe",
+                "https://github.com/david-vrba/EasyQuickScreenshot/releases/download/v0.7.1/eqs-settings.exe"
             ],
             "hash": [
-                "9c0d69578d76551a929e001131a63d97ff409c577229bd4dd9a25e4366bf50d9",
-                "c7c82156dfc7a8ed0385798aa25c4a6f885b52c106ee268970559297961375a7"
+                "cf776515e7147bf89e3fe3df40c3cbc027f139da554531f8f8daafd7532f68ec",
+                "5f9d50d9810553370add61ff5e87023ef749e65b5f7a47419f82dd44e921845e"
             ]
         }
     },
