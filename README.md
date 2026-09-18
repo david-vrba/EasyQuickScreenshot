@@ -37,6 +37,7 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 
 | | |
 |---|---|
+| `?` on the bar, or `F1` | the whole key list, as a panel. Click anywhere to dismiss it |
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
 | `F` | fill — the next rectangle or circle is **solid** in the current colour. Pick black, drag over a password, and it is gone. Off again each capture |
 | `T` | text — click where it goes and type. `Enter` starts a new line; `Ctrl+Enter`, or a click anywhere else, places it |
@@ -58,6 +59,10 @@ just inside the top edge when neither fits — which is what a full-screen captu
 It is placed against the monitor you are capturing, not the whole desktop, so it stays
 reachable on a multi-monitor setup where the screens are different heights. It is drawn in
 the preview only, so wherever it sits it is never in the file.
+
+Nothing else is printed on screen. The keys live behind the `?` button on the bar, because
+a list you read once and then stare at forever is just clutter. The one exception is while
+typing, where `Ctrl+Enter` to finish is the only key nobody guesses.
 
 Every tool is also a button on the toolbar, so you never have to remember a key. Shapes are
 drawn stroke-only — nothing is ever filled in over your screenshot.

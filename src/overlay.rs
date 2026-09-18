@@ -94,6 +94,8 @@ struct Overlay {
     /// Fill the next rectangle or circle. Deliberately not remembered between captures:
     /// a solid block appearing over a shot you did not mean to cover is worse than a keypress.
     fill: bool,
+    /// The shortcut table is showing. Preview only, like the bar itself.
+    help: bool,
     keeper: bool,
     /// Text being typed (the shape that renders it + the editing state); committed to
     /// `shapes` on Enter or when the mouse does anything else.
@@ -190,6 +192,7 @@ pub fn select_region(
             color,
             stroke,
             fill: false,
+            help: false,
             keeper: false,
             typing: None,
             editing: None,
@@ -484,6 +487,14 @@ unsafe fn annotate_proc(
         }
         WM_LBUTTONDOWN => {
             let (x, y) = lparam_xy(lparam);
+            if state.help {
+                let over_panel = annotate::contains(help_area(state), x, y);
+                state.help = false;
+                let _ = InvalidateRect(hwnd, None, false);
+                if over_panel {
+                    return LRESULT(0); // the panel ate the click, nothing is drawn under it
+                }
+            }
             if let Some(action) = annotate::hit_test(&state.cells, x, y) {
                 commit_typing(state);
                 apply(state, action);
@@ -550,7 +561,8 @@ unsafe fn annotate_proc(
                 let _ = InvalidateRect(hwnd, None, false);
             } else {
                 let before = grip_shape(state);
-                state.hover_bar = annotate::over_bar(&state.cells, x, y);
+                state.hover_bar = annotate::over_bar(&state.cells, x, y)
+                    || (state.help && annotate::contains(help_area(state), x, y));
                 state.hover = if state.hover_bar { None } else { grab_target(state, x, y) };
                 if grip_shape(state) != before {
                     let _ = InvalidateRect(hwnd, None, false);
@@ -673,6 +685,12 @@ unsafe fn grab_target(state: &Overlay, x: i32, y: i32) -> Option<Target> {
         return Some(Target::RegionBody);
     }
     None
+}
+
+/// Where the shortcut table sits, for drawing it and for knowing when a click landed on it.
+unsafe fn help_area(state: &Overlay) -> Rect {
+    let hint = if state.typing.is_some() { Hint::Typing } else { Hint::Drawing };
+    annotate::help_rect(&state.cells, monitor_rect(state, state.sel), hint)
 }
 
 /// The monitor the selection sits on, in buffer coordinates. The toolbar is placed
@@ -963,6 +981,7 @@ fn apply(state: &mut Overlay, action: Action) {
         Action::Color(i) => state.color = i,
         Action::Width(i) => state.stroke = i,
         Action::ToggleFill => state.fill = !state.fill,
+        Action::ToggleHelp => state.help = !state.help,
         Action::Commit { keeper } => {
             state.keeper = keeper;
             state.done = true;
@@ -1022,9 +1041,13 @@ unsafe fn compose(state: &Overlay) {
             color: state.color,
             width: state.stroke,
             fill: state.fill,
+            help: state.help,
             hint: if state.typing.is_some() { Hint::Typing } else { Hint::Drawing },
         };
         annotate::draw_toolbar(back, &state.cells, &bar);
+        if state.help {
+            annotate::draw_help(back, help_area(state), bar.hint);
+        }
         return;
     }
 
@@ -1134,6 +1157,7 @@ pub fn render_test_frame(
             color: 0,
             stroke: 1,
             fill: false,
+            help: true, // the demo frame renders the panel, so one frame proves it draws
             keeper: false,
             typing: None,
             editing: None,
@@ -1249,6 +1273,7 @@ pub fn export_test(
             color: 0,
             stroke: 1,
             fill: false,
+            help: true, // open on the way in: the export must still not contain it
             keeper: false,
             typing: None,
             editing: None,

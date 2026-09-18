@@ -17,9 +17,10 @@ use windows::Win32::Graphics::GdiPlus::{
     GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen, GdipDrawCurveI, GdipDrawEllipseI,
     GdipDrawLineI, GdipDrawLinesI, GdipDrawRectangleI, GdipFillEllipseI, GdipFillPolygonI,
     GdipFillRectangleI,
-    GdipSetClipRectI, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
-    GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPen,
-    LineCapRound, LineJoinRound, Point, SmoothingModeAntiAlias, UnitPixel,
+    GdipAddPathArcI, GdipClosePathFigure, GdipCreatePath, GdipDeletePath, GdipDrawPath,
+    GdipFillPath, GdipSetClipRectI, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
+    GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPath,
+    GpPen, LineCapRound, LineJoinRound, Point, SmoothingModeAntiAlias, UnitPixel,
 };
 
 pub type Rect = (i32, i32, i32, i32);
@@ -943,6 +944,8 @@ pub enum Action {
     Width(usize),
     /// Solid inside for the next rectangle or circle.
     ToggleFill,
+    /// Show or hide the shortcut table.
+    ToggleHelp,
     /// `keeper` = a timestamped file in saved/ (the Save mode); otherwise temp.png (Quick).
     Commit { keeper: bool },
 }
@@ -980,7 +983,17 @@ fn bar_width() -> i32 {
         + GAP
         + CELL
         + GAP
+        + CELL
+        + GAP
         + BTN * 2
+}
+
+/// The bar's own outer box: x, y, width, height.
+pub fn bar_box(cells: &[Cell]) -> Rect {
+    let Some(first) = cells.first() else { return (0, 0, 0, 0) };
+    let last = cells.last().unwrap();
+    let (x, y) = (first.x - PAD, first.y - PAD);
+    (x, y, last.x + last.w + PAD - x, BAR_H)
 }
 
 /// Place the bar under the selection, flipping above it when the bottom edge is in the
@@ -1031,6 +1044,8 @@ pub fn layout(sel: Rect, screen: Rect) -> Vec<Cell> {
     cx += GAP;
     cells.push(Cell { x: cx, y: cy, w: CELL, h: CELL, action: Action::ToggleFill });
     cx += CELL + GAP;
+    cells.push(Cell { x: cx, y: cy, w: CELL, h: CELL, action: Action::ToggleHelp });
+    cx += CELL + GAP;
     cells.push(Cell { x: cx, y: cy, w: BTN, h: CELL, action: Action::Commit { keeper: false } });
     cx += BTN;
     cells.push(Cell { x: cx, y: cy, w: BTN, h: CELL, action: Action::Commit { keeper: true } });
@@ -1043,19 +1058,121 @@ pub fn hit_test(cells: &[Cell], x: i32, y: i32) -> Option<Action> {
 
 /// True while the pointer is over the bar, so a drag started there never draws a shape.
 pub fn over_bar(cells: &[Cell], x: i32, y: i32) -> bool {
-    let Some(first) = cells.first() else { return false };
-    let last = cells.last().unwrap();
-    let (x0, y0) = (first.x - PAD, first.y - PAD);
-    let (x1, y1) = (last.x + last.w + PAD, first.y + CELL + PAD);
-    x >= x0 && x < x1 && y >= y0 && y < y1
+    if cells.is_empty() {
+        return false;
+    }
+    contains(bar_box(cells), x, y)
 }
 
-/// Which key list the hint line shows. Typing swallows the tool letters, so offering
+/// Which key list the help panel shows. Typing swallows the tool letters, so offering
 /// them then would be a lie.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Hint {
     Drawing,
     Typing,
+}
+
+/// The shortcuts, as a two-column table. This is the only place they are written down, and
+/// it is behind the ? button rather than printed under the bar — it is read once and then
+/// in the way forever.
+const HELP_DRAWING: &[(&str, &str)] = &[
+    ("R  A  L  C  P", "rectangle · arrow · line · circle · pen"),
+    ("T", "text — double-click placed text to edit it"),
+    ("F", "fill the next rectangle or circle solid"),
+    ("1 – 8", "colour · red is the default"),
+    ("mouse wheel", "stroke width, and text size"),
+    ("hold Shift", "square, circle, or a line snapped to 45°"),
+    ("drag a border", "move the shape, or the capture region"),
+    ("drag a corner", "resize it · the opposite corner stays put"),
+    ("Ctrl+Z / Ctrl+Y", "undo / redo"),
+    ("right-click", "undo, without leaving the mouse"),
+    ("Enter", "save to shots/temp.png"),
+    ("Shift+Enter", "save a timestamped copy"),
+    ("Esc", "drop the shape · again to abort the capture"),
+];
+
+const HELP_TYPING: &[(&str, &str)] = &[
+    ("Enter", "new line"),
+    ("Ctrl+Enter", "done — a click elsewhere also places it"),
+    ("Ctrl+A", "select all"),
+    ("Ctrl+C / X / V", "copy · cut · paste"),
+    ("← → ↑ ↓", "move the caret"),
+    ("Home / End", "start or end of the line"),
+    ("Del", "delete forwards"),
+    ("Esc", "throw the text away"),
+];
+
+fn help_table(hint: Hint) -> &'static [(&'static str, &'static str)] {
+    match hint {
+        Hint::Drawing => HELP_DRAWING,
+        Hint::Typing => HELP_TYPING,
+    }
+}
+
+const HELP_ROW: i32 = 21;
+const HELP_PAD: i32 = 16;
+const HELP_KEY_W: i32 = 130;
+const HELP_W: i32 = 430;
+
+/// Where the panel goes: centred under the bar, flipped above it when the monitor's bottom
+/// edge is in the way, and never off the side.
+pub fn help_rect(cells: &[Cell], screen: Rect, hint: Hint) -> Rect {
+    let h = HELP_PAD * 2 + help_table(hint).len() as i32 * HELP_ROW;
+    let (bx, by, bw, bh) = bar_box(cells);
+    let x = (bx + (bw - HELP_W) / 2).clamp(screen.0, (screen.0 + screen.2 - HELP_W).max(screen.0));
+    let below = by + bh + 8;
+    let y = if below + h <= screen.1 + screen.3 {
+        below
+    } else {
+        (by - 8 - h).max(screen.1)
+    };
+    (x, y, HELP_W, h)
+}
+
+pub fn contains(rect: Rect, x: i32, y: i32) -> bool {
+    x >= rect.0 && x < rect.0 + rect.2 && y >= rect.1 && y < rect.1 + rect.3
+}
+
+/// GDI+ has no rounded rectangle, so trace one from its four corner arcs — it joins them
+/// with the straight edges itself.
+unsafe fn rounded_path(rect: Rect, radius: i32) -> *mut GpPath {
+    let (x, y, w, h) = rect;
+    let d = radius * 2;
+    let mut path: *mut GpPath = std::ptr::null_mut();
+    if GdipCreatePath(FillModeAlternate, &mut path) != windows::Win32::Graphics::GdiPlus::Ok {
+        return std::ptr::null_mut();
+    }
+    GdipAddPathArcI(path, x, y, d, d, 180.0, 90.0);
+    GdipAddPathArcI(path, x + w - d, y, d, d, 270.0, 90.0);
+    GdipAddPathArcI(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+    GdipAddPathArcI(path, x, y + h - d, d, d, 90.0, 90.0);
+    GdipClosePathFigure(path);
+    path
+}
+
+pub unsafe fn draw_help(hdc: HDC, rect: Rect, hint: Hint) {
+    if let Some(canvas) = Canvas::new(hdc) {
+        let path = rounded_path(rect, 10);
+        if !path.is_null() {
+            with_brush(0xF01A1A1A, |b| GdipFillPath(canvas.0, b, path));
+            with_pen(0x59FFFFFF, 1.0, |p| GdipDrawPath(canvas.0, p, path));
+            GdipDeletePath(path);
+        }
+    }
+    // Text after GDI+ is torn down, so the two drawing stacks never share the DC.
+    let old_font = SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(hdc, TRANSPARENT);
+    let mut y = rect.1 + HELP_PAD;
+    for (keys, what) in help_table(hint) {
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let k: Vec<u16> = keys.encode_utf16().collect();
+        let _ = TextOutW(hdc, rect.0 + HELP_PAD, y, &k);
+        SetTextColor(hdc, COLORREF(0x00B4B4B4));
+        let v: Vec<u16> = what.encode_utf16().collect();
+        let _ = TextOutW(hdc, rect.0 + HELP_PAD + HELP_KEY_W, y, &v);
+        y += HELP_ROW;
+    }
+    SelectObject(hdc, old_font);
 }
 
 /// Everything the bar renders beyond its own cells.
@@ -1064,6 +1181,7 @@ pub struct BarState {
     pub color: usize,
     pub width: usize,
     pub fill: bool,
+    pub help: bool,
     pub hint: Hint,
 }
 
@@ -1084,7 +1202,8 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
                 (Action::Pick(t), cur) if t == cur
             ) || cell.action == Action::Color(bar.color)
                 || cell.action == Action::Width(bar.width)
-                || (cell.action == Action::ToggleFill && bar.fill);
+                || (cell.action == Action::ToggleFill && bar.fill)
+                || (cell.action == Action::ToggleHelp && bar.help);
             if selected {
                 with_brush(0x40FFFFFF, |b| {
                     GdipFillRectangleI(g, b, cell.x, cell.y - 2, cell.w, cell.h + 4)
@@ -1115,7 +1234,7 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
                     let (fx, fy, fw, fh) = (cell.x + 7, cell.y + 7, cell.w - 14, cell.h - 14);
                     with_brush(0xFFFFFFFF, |b| GdipFillRectangleI(g, b, fx, fy, fw, fh));
                 }
-                Action::Commit { .. } => {}
+                Action::ToggleHelp | Action::Commit { .. } => {}
             }
         }
     }
@@ -1125,20 +1244,29 @@ pub unsafe fn draw_toolbar(hdc: HDC, cells: &[Cell], bar: &BarState) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
     for cell in cells {
-        if let Action::Commit { keeper } = cell.action {
-            let label: Vec<u16> = if keeper { "SAVE" } else { "QUICK" }.encode_utf16().collect();
-            let _ = TextOutW(hdc, cell.x + 7, cell.y + 7, &label);
+        match cell.action {
+            Action::Commit { keeper } => {
+                let label: Vec<u16> =
+                    if keeper { "SAVE" } else { "QUICK" }.encode_utf16().collect();
+                let _ = TextOutW(hdc, cell.x + 7, cell.y + 7, &label);
+            }
+            Action::ToggleHelp => {
+                let _ = TextOutW(hdc, cell.x + 11, cell.y + 6, &"?".encode_utf16().collect::<Vec<u16>>());
+            }
+            _ => {}
         }
     }
-    let line = match bar.hint {
-        Hint::Drawing => "R rect  A arrow  L line  C circle  P pen  T text (double-click to re-edit)   F fill   1-8 colour   wheel size   border = move, corner = resize   Ctrl+Z undo  Ctrl+Y redo   Enter quick   Shift+Enter save   Esc",
-        Hint::Typing => "typing:   Enter new line   Ctrl+Enter done   Ctrl+A select all   Ctrl+C/X/V copy, cut, paste   arrows / Home / End move the caret   Del delete   Esc discard",
-    };
-    let hint: Vec<u16> = line.encode_utf16().collect();
-    SetTextColor(hdc, COLORREF(0x00000000));
-    let _ = TextOutW(hdc, bx + 2, by + BAR_H + 4, &hint);
-    SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let _ = TextOutW(hdc, bx + 1, by + BAR_H + 3, &hint);
+    // The tools are on the bar and the rest is behind the ?. The one exception is finishing
+    // a text: Ctrl+Enter is the only key here nobody guesses, and by then Enter is taken.
+    if bar.hint == Hint::Typing {
+        let line: Vec<u16> = "Enter  new line       Ctrl+Enter  done       Esc  discard"
+            .encode_utf16()
+            .collect();
+        SetTextColor(hdc, COLORREF(0x00000000));
+        let _ = TextOutW(hdc, bx + 2, by + BAR_H + 4, &line);
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let _ = TextOutW(hdc, bx + 1, by + BAR_H + 3, &line);
+    }
     SelectObject(hdc, old_font);
 }
 
@@ -1179,6 +1307,10 @@ unsafe fn draw_tool_glyph(g: *mut GpGraphics, tool: Tool, c: &Cell) {
 
 /// Keyboard shortcuts for the bar. Returns None for keys the overlay handles itself.
 pub fn key_action(vk: u16) -> Option<Action> {
+    const F1: u16 = 0x70;
+    if vk == F1 {
+        return Some(Action::ToggleHelp);
+    }
     match vk as u8 as char {
         'R' => Some(Action::Pick(Tool::Rect)),
         'A' => Some(Action::Pick(Tool::Arrow)),
@@ -1644,8 +1776,8 @@ mod tests {
         assert_eq!(s.pts, vec![(15, 5), (25, 25)]);
     }
 
-    /// The bar's own outer box, which is what has to stay on screen.
-    fn bar_box(cells: &[Cell]) -> (i32, i32, i32, i32) {
+    /// The bar's outer box as corners, which is what has to stay on screen.
+    fn bar_bounds(cells: &[Cell]) -> (i32, i32, i32, i32) {
         let (first, last) = (cells.first().unwrap(), cells.last().unwrap());
         (
             first.x - PAD,
@@ -1657,7 +1789,7 @@ mod tests {
 
     /// Every placement has to land on the monitor being captured, hint line included.
     fn assert_on(monitor: Rect, cells: &[Cell]) {
-        let (x0, y0, x1, y1) = bar_box(cells);
+        let (x0, y0, x1, y1) = bar_bounds(cells);
         let (mx, my, mw, mh) = monitor;
         assert!(x0 >= mx, "off the left of the monitor");
         assert!(x1 <= mx + mw, "off the right of the monitor");
@@ -1670,7 +1802,7 @@ mod tests {
         let screen = (0, 0, 1920, 1080);
         let cells = layout(screen, screen);
         assert_on(screen, &cells);
-        let (x0, _, x1, y1) = bar_box(&cells);
+        let (x0, _, x1, y1) = bar_bounds(&cells);
         assert!(y1 < 1080 / 2, "near the top, not pinned to the bottom edge");
         assert_eq!((x0 + x1) / 2, 1920 / 2, "centred");
     }
@@ -1687,9 +1819,35 @@ mod tests {
     }
 
     #[test]
+    fn the_help_panel_stays_on_the_monitor() {
+        // Including a monitor that starts part-way down the desktop, and a capture low
+        // enough that the panel has to flip above the bar.
+        for monitor in [(0, 0, 1920, 1080), (0, 182, 1920, 1080)] {
+            for sel in [monitor, (400, monitor.1 + 40, 600, 300), (400, monitor.1 + 1000, 600, 60)] {
+                for hint in [Hint::Drawing, Hint::Typing] {
+                    let r = help_rect(&layout(sel, monitor), monitor, hint);
+                    assert!(r.0 >= monitor.0, "off the left for {:?}", sel);
+                    assert!(r.0 + r.2 <= monitor.0 + monitor.2, "off the right for {:?}", sel);
+                    assert!(r.1 >= monitor.1, "above the monitor for {:?}", sel);
+                    assert!(r.1 + r.3 <= monitor.1 + monitor.3, "below the monitor for {:?}", sel);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_lands_on_the_panel_only_inside_it() {
+        let r = (100, 100, 430, 300);
+        assert!(contains(r, 100, 100), "top-left corner is inside");
+        assert!(contains(r, 529, 399), "bottom-right pixel is inside");
+        assert!(!contains(r, 530, 200), "one past the right edge is out");
+        assert!(!contains(r, 99, 200), "one before the left edge is out");
+    }
+
+    #[test]
     fn the_bar_is_centred_on_the_selection() {
         let cells = layout((400, 200, 900, 300), (0, 0, 1920, 1080));
-        let (x0, _, x1, _) = bar_box(&cells);
+        let (x0, _, x1, _) = bar_bounds(&cells);
         assert_eq!((x0 + x1) / 2, 400 + 900 / 2, "centred on the capture, not its left edge");
     }
 

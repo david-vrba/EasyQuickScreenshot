@@ -11,7 +11,8 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   by its border to move it and by a corner to resize it; undo/redo covers every edit; the
   colour and width you picked are still set next capture; text is multi-line and can be
   re-opened by double-clicking it; `F` fills a rectangle or circle solid, for blacking
-  something out; `Enter` = quick, `Shift+Enter` = save
+  something out; the key list is behind a `?` button instead of printed under the bar;
+  `Enter` = quick, `Shift+Enter` = save
 - `Ctrl+Shift+Alt+E` — open the current save folder
 - No dimming, no flash, no shutter; overlay can't leak into the shot
 - Multi-monitor + mixed-DPI selection
