@@ -21,6 +21,10 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 
 ## Next
 - A short demo GIF in the README
+- `windows` 0.58 → 0.62 in the core. Every Win32 call is written against the 0.58 signatures
+  and each major rewrites them (`HWND` → `Option<HWND>` and friends), so it is a migration,
+  not a version bump. The settings app is already on 0.62. Dependabot is told to stop
+  offering the major until this is done by hand.
 - **winget** package (Scoop is live; the winget PR needs re-filing)
 - Annotate: clicking into text to place the caret, and a text size control of its own
 
