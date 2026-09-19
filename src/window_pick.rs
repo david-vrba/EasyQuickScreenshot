@@ -16,6 +16,11 @@ use crate::annotate::Rect;
 /// Smallest window worth offering. Anything thinner is a sliver of chrome, not a target.
 const MIN_PANE_PX: i32 = 40;
 
+/// How much of each side's length the pane gives back to the window, so a strip of what you
+/// are pointing at stays visible all the way round. 5% of the width and 5% of the height,
+/// split between the two edges: a 1000px-wide window keeps 50px of itself in view.
+const INSET_PERCENT: i32 = 5;
+
 /// Every pickable window, topmost first, in buffer coordinates.
 /// `origin` is where the capture buffer sits on the virtual desktop.
 pub fn panes(origin: (i32, i32), width: i32, height: i32) -> Vec<Rect> {
@@ -136,6 +141,14 @@ pub fn ease(shown: (f32, f32, f32, f32), target: Rect, step: f32) -> ((f32, f32,
     }
 }
 
+/// Where the pane is actually drawn: inside the window, not exactly on it. Applied at draw
+/// time only — the capture still takes the whole window, edge to edge.
+pub fn inset(rect: Rect) -> Rect {
+    let dx = rect.2 * INSET_PERCENT / 200;
+    let dy = rect.3 * INSET_PERCENT / 200;
+    (rect.0 + dx, rect.1 + dy, rect.2 - dx * 2, rect.3 - dy * 2)
+}
+
 pub fn to_rect(shown: (f32, f32, f32, f32)) -> Rect {
     (
         shown.0.round() as i32,
@@ -145,15 +158,14 @@ pub fn to_rect(shown: (f32, f32, f32, f32)) -> Rect {
     )
 }
 
-/// The area to repaint when the pane moves from one rectangle to another: both of them,
-/// plus room for the border. Repainting only this is what keeps the animation smooth on a
-/// multi-monitor desktop, where redrawing every pixel each frame costs tens of megabytes.
-pub fn dirty(from: Rect, to: Rect, margin: i32) -> Rect {
-    let x0 = from.0.min(to.0) - margin;
-    let y0 = from.1.min(to.1) - margin;
-    let x1 = (from.0 + from.2).max(to.0 + to.2) + margin;
-    let y1 = (from.1 + from.3).max(to.1 + to.3) + margin;
-    (x0, y0, x1 - x0, y1 - y0)
+/// One rectangle with room around it for the pane's border and its antialiasing.
+pub fn grown(rect: Rect, margin: i32) -> Rect {
+    (
+        rect.0 - margin,
+        rect.1 - margin,
+        rect.2 + margin * 2,
+        rect.3 + margin * 2,
+    )
 }
 
 #[cfg(test)]
@@ -205,8 +217,22 @@ mod tests {
     }
 
     #[test]
-    fn the_repaint_area_covers_where_the_pane_was_and_where_it_is_going() {
-        let d = dirty((0, 0, 100, 100), (300, 200, 50, 50), 4);
-        assert_eq!(d, (-4, -4, 358, 258));
+    fn the_pane_leaves_a_strip_of_the_window_showing() {
+        // David's number: a 1000px side keeps 50px of itself visible, 25 at each edge.
+        assert_eq!(inset((0, 0, 1000, 1000)), (25, 25, 950, 950));
+        assert_eq!(inset((100, 200, 2560, 1392)), (164, 234, 2432, 1324));
+    }
+
+    #[test]
+    fn even_the_smallest_window_still_gets_a_pane_it_can_draw() {
+        // Below twice the corner radius the rounded path degenerates, so the floor on a
+        // pickable window has to survive the inset.
+        let (_, _, w, h) = inset((0, 0, MIN_PANE_PX, MIN_PANE_PX));
+        assert!(w > 24 && h > 24, "{}x{} is too small to round", w, h);
+    }
+
+    #[test]
+    fn the_grown_area_leaves_room_for_the_border() {
+        assert_eq!(grown((10, 20, 100, 50), 4), (6, 16, 108, 58));
     }
 }

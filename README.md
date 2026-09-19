@@ -20,12 +20,15 @@ EasyQuickScreenshot does one thing: **get the pixels you're pointing at into a f
 
 | Hotkey | Mode | What happens |
 |---|---|---|
-| `Ctrl+Alt+Q` | **Quick shot** | Saves to a single fixed file, `shots/temp.png`. The next quick shot **overwrites it**. One file, forever — zero folder bloat. |
-| `Ctrl+Alt+E` | **Easy save** | Saves a timestamped PNG to `shots/saved/` for captures you want to keep. |
-| `Ctrl+Shift+Alt+Q` | **Annotate** | Same drag, then a toolbar appears so you can draw on the shot before it's written. |
-| `Ctrl+Alt+PrintScreen` | **Focus mode** | No dragging at all. Point at a window, it lights up, click it — the whole window goes straight to the editor. |
+| `Ctrl+Alt+Q` | **Quick shot** | Drag a region, the editor opens, press `Q` again. Saved to one fixed file, `shots/temp.png`, which the next quick shot **overwrites**. One file, forever — zero folder bloat. |
+| `Ctrl+Alt+E` | **Easy save** | The same, but press `E` and it keeps a timestamped PNG in `shots/saved/`. |
+| `Ctrl+Shift+Alt+Q` | **Focus mode** | No dragging at all. Point at a window, it lights up, click it — the whole window goes to the editor. |
 
-Both modes also copy the capture to the clipboard (configurable), so `Ctrl+V` works immediately.
+**The letter that opens a capture is the letter that finishes it.** `Ctrl+Alt+Q` … `Q`.
+`Ctrl+Alt+E` … `E`. `Enter` and `Shift+Enter` do the same two things if your hand is already
+there. While you are typing a caption, `Q` and `E` are just letters — nothing is saved.
+
+Every capture also goes to the clipboard (configurable), so `Ctrl+V` works immediately.
 
 **Q**uick and **E**asy — that's the name.
 
@@ -36,9 +39,10 @@ There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folde
 Most captures are "that window, all of it". Dragging a rectangle around a window is work you
 should not have to do, and the edges are never quite right.
 
-Press `Ctrl+Alt+PrintScreen` and there is no rectangle to draw. The pointer becomes a hand,
-and the window underneath it is covered by a soft grey pane with a white border. Move the
-mouse and the pane **slides** to the next window, the way the Windows snap preview does.
+Press `Ctrl+Shift+Alt+Q` and there is no rectangle to draw. The pointer becomes a hand,
+and the window underneath it is covered by a soft grey pane with a white border, sitting
+just inside its edges so a strip of the window itself still shows all the way round. Move
+the mouse and the pane **slides** to the next window, the way the Windows snap preview does.
 Click, and that window — exactly its own edges, not a guess — opens in the editor, where
 `Enter` writes `temp.png` and `Shift+Enter` keeps a timestamped copy.
 
@@ -55,8 +59,8 @@ never registered, so the key stays free for something else.
 
 ## Annotating
 
-`Ctrl+Shift+Alt+Q` captures the same way, but instead of writing the file it holds the frozen
-region and raises a small toolbar under it. Draw, then press `Enter`.
+Every capture ends here. The frozen region is held with a small toolbar under it — draw on
+it, or don't, then press the letter you started with.
 
 | | |
 |---|---|
@@ -73,8 +77,8 @@ region and raises a small toolbar under it. Draw, then press `Enter`.
 | drag a corner | resize it — the opposite corner stays put. Works on shapes and on the capture region |
 | `Ctrl+Z` or right-click | undo — covers moves and resizes, not just drawing |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | redo |
-| `Enter` or **QUICK** | write `shots/temp.png` — same as a quick shot |
-| `Shift+Enter` or **SAVE** | write a timestamped copy in `shots/saved/` — same as a save |
+| `Q`, `Enter`, or **QUICK** | write `shots/temp.png` — the fixed file |
+| `E`, `Shift+Enter`, or **SAVE** | write a timestamped copy in `shots/saved/` |
 | `Esc` | cancel the current shape, again to abort |
 
 The toolbar sits centred under your selection, flips above it near the bottom, and drops
@@ -149,9 +153,9 @@ pwsh scripts/autostart.ps1 -Remove  # unregister
 
 1. Press the hotkey. The screen freezes — no dimming, no effects — and full-screen crosshair lines mark your position. *(Prefer a plain crosshair cursor instead of the lines? Set `crosshair_style = "cursor"`.)* The capture is taken **before** the overlay appears, so the overlay can never end up in your screenshot.
 2. Drag a rectangle. The border and guides invert the pixels beneath them, so they're visible on any background, with live pixel dimensions below the selection.
-3. Release. The PNG is written and copied. No confirmation, no flash, no sound — check the tray tooltip if you forget your keys.
+3. Release. The editor opens on the frozen region. Press `Q` (or `E`) and the PNG is written and copied — no confirmation, no flash, no sound. Draw on it first if you want to; most of the time you won't.
 
-Annotating adds one step: draw, then `Enter`. **Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
+**Cancel** with `Esc` or right-click. Selections under 3×3 px are treated as accidental and discarded. Multi-monitor selections (across mixed-DPI displays) work — the overlay spans the entire virtual desktop.
 
 ## Settings & gallery (optional)
 
@@ -171,9 +175,8 @@ Put `eqs-settings.exe` next to `eqs.exe` and open it from the tray → *Settings
 quick_hotkey  = "ctrl+alt+q"        # modifiers: ctrl, alt, shift, win
 save_hotkey   = "ctrl+alt+e"        # keys: a-z, 0-9, f1-f24, printscreen, space
 folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
-annotate_hotkey = "ctrl+shift+alt+q"  # capture, then draw on it before saving
 window_pick   = true                # focus mode: pick a whole window, no dragging
-window_hotkey = "ctrl+alt+printscreen"
+window_hotkey = "ctrl+shift+alt+q"
 shots_dir     = "shots"             # relative paths resolve against this file's folder
 temp_file    = "temp.png"
 copy_to_clipboard = true

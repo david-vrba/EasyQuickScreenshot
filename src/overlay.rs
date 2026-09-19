@@ -72,9 +72,10 @@ pub enum Start {
 }
 
 /// How much of the remaining distance the pane covers each frame, and how often a frame is
-/// drawn. 0.28 at 60fps settles in about a fifth of a second — long enough to read as
-/// movement, short enough that it never feels like waiting.
-const PANE_EASE: f32 = 0.28;
+/// drawn. 0.34 at 60fps settles in about eight frames — long enough to read as movement,
+/// short enough that it is over before it can feel like waiting, and fewer frames is less
+/// work on a machine that cannot afford them.
+const PANE_EASE: f32 = 0.34;
 const PANE_FRAME_MS: u32 = 16;
 const PANE_TIMER: usize = 1;
 /// Room around the pane for its border, so easing never leaves a line of it behind.
@@ -537,17 +538,38 @@ unsafe fn pane_under(state: &Overlay, point: (i32, i32)) -> Rect {
         .unwrap_or_else(|| monitor_at(state, point))
 }
 
-/// Repaint only where the pane was and where it now is. A full frame is tens of megabytes
-/// of blitting on a multi-monitor desktop, which at 60fps is what would make it stutter.
-unsafe fn invalidate_pane(hwnd: HWND, from: Rect, to: Rect) {
-    let (x, y, w, h) = window_pick::dirty(from, to, PANE_MARGIN);
-    let rect = windows::Win32::Foundation::RECT {
-        left: x,
-        top: y,
-        right: x + w,
-        bottom: y + h,
-    };
-    let _ = InvalidateRect(hwnd, Some(&rect), false);
+/// Put the pane's current position on screen, erasing where it was.
+///
+/// The two rectangles are drawn one at a time rather than over their bounding box. When the
+/// pointer crosses between monitors that box is most of the desktop — 37 MB of blitting per
+/// frame on a 6400x1440 one — while the two rectangles together are never bigger than two
+/// windows. That difference is the whole cost of the movement.
+///
+/// Drawn here rather than through `WM_PAINT` because a frame this predictable does not need
+/// the invalidate round trip; `WM_PAINT` still composes the whole window when something
+/// else uncovers it.
+unsafe fn slide_pane(hwnd: HWND, state: &Overlay, was: Rect, now: Rect) {
+    let hdc = GetDC(hwnd);
+    if hdc.is_invalid() {
+        return;
+    }
+    redraw_area(state, hdc, window_pick::grown(window_pick::inset(was), PANE_MARGIN));
+    if now != was {
+        redraw_area(state, hdc, window_pick::grown(window_pick::inset(now), PANE_MARGIN));
+    }
+    ReleaseDC(hwnd, hdc);
+}
+
+/// Restore one rectangle of frozen screen, draw whatever of the pane falls inside it, and
+/// put that rectangle on the window.
+unsafe fn redraw_area(state: &Overlay, hdc: HDC, area: Rect) {
+    let (x, y, w, h) = area;
+    let _ = BitBlt(state.back_dc, x, y, w, h, state.bright_dc, x, y, SRCCOPY);
+    if let Some(shown) = state.shown {
+        let pane = window_pick::inset(window_pick::to_rect(shown));
+        annotate::draw_pane(state.back_dc, pane, area);
+    }
+    let _ = BitBlt(hdc, x, y, w, h, state.back_dc, x, y, SRCCOPY);
 }
 
 unsafe fn pick_proc(
@@ -586,7 +608,7 @@ unsafe fn pick_proc(
                     }
                     None => {
                         state.shown = Some(as_shown(next));
-                        invalidate_pane(hwnd, next, next);
+                        slide_pane(hwnd, state, next, next);
                     }
                 }
             }
@@ -605,7 +627,7 @@ unsafe fn pick_proc(
                 let _ = KillTimer(hwnd, PANE_TIMER);
                 state.sliding = false;
             }
-            invalidate_pane(hwnd, was, window_pick::to_rect(next));
+            slide_pane(hwnd, state, was, window_pick::to_rect(next));
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -1190,13 +1212,10 @@ fn from_rect(r: windows::Win32::Foundation::RECT) -> Rect {
 unsafe fn paint(state: &Overlay, hdc: HDC, dirty: Rect) {
     let (dx, dy, dw, dh) = dirty;
     if state.phase == Phase::Pick {
-        let _ = BitBlt(state.back_dc, dx, dy, dw, dh, state.bright_dc, dx, dy, SRCCOPY);
-        if let Some(shown) = state.shown {
-            annotate::draw_pane(state.back_dc, window_pick::to_rect(shown), dirty);
-        }
-    } else {
-        compose(state);
+        redraw_area(state, hdc, dirty);
+        return;
     }
+    compose(state);
     let _ = BitBlt(hdc, dx, dy, dw, dh, state.back_dc, dx, dy, SRCCOPY);
 }
 
@@ -1211,7 +1230,8 @@ unsafe fn compose(state: &Overlay) {
 
     if state.phase == Phase::Pick {
         if let Some(shown) = state.shown {
-            annotate::draw_pane(back, window_pick::to_rect(shown), (0, 0, w, h));
+            let pane = window_pick::inset(window_pick::to_rect(shown));
+            annotate::draw_pane(back, pane, (0, 0, w, h));
         }
         return;
     }

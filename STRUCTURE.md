@@ -34,7 +34,7 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 
 | File | Owns |
 |---|---|
-| `src/main.rs` | Entry point, single-instance mutex, DPI awareness, hidden window + message loop, hotkey registration (quick / save / annotate / open-folder), tray-menu commands (launch settings, open shots/config, reload), the capture flow glue, headless `--shoot` and `--render-test` hooks |
+| `src/main.rs` | Entry point, single-instance mutex, DPI awareness, hidden window + message loop, hotkey registration (quick / save / focus mode / open-folder), tray-menu commands (launch settings, open shots/config, reload), the capture flow glue, headless `--shoot` and `--render-test` hooks |
 | `src/config.rs` | `config.toml` discovery/parsing, defaults, hotkey-string → `(modifiers, vk)` parsing |
 | `src/capture.rs` | `Screenshot` (BGRA buffer + geometry), `capture_virtual_screen()` via GDI BitBlt, `crop()` |
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling; also the second (annotate) phase and flattening the drawing into the exported crop |

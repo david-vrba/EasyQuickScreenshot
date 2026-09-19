@@ -21,14 +21,14 @@ save_hotkey = "ctrl+alt+e"
 # Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
 folder_hotkey = "ctrl+shift+alt+e"
 
-# Annotate: same crosshair drag, then a toolbar to draw on the shot before it is written.
-# Enter saves over the temp file, Shift+Enter keeps a timestamped copy.
-annotate_hotkey = "ctrl+shift+alt+q"
-
 # Focus mode: no dragging. Point at a window, it lights up, click it and the whole window
 # goes to the editor. Set to false and the hotkey below is not registered at all.
 window_pick = true
-window_hotkey = "ctrl+alt+printscreen"
+window_hotkey = "ctrl+shift+alt+q"
+
+# Kept so older config files still load. Drawing is no longer a separate mode — both
+# hotkeys above open the editor — so this binding is read and ignored.
+annotate_hotkey = "ctrl+shift+alt+q"
 
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
@@ -51,6 +51,8 @@ pub struct RawConfig {
     pub quick_hotkey: String,
     pub save_hotkey: String,
     pub folder_hotkey: String,
+    /// Read and ignored since 0.10.0, where every capture opens the editor. The field has
+    /// to stay: `deny_unknown_fields` would otherwise reject every config file that has it.
     pub annotate_hotkey: String,
     pub window_hotkey: String,
     pub window_pick: bool,
@@ -67,7 +69,7 @@ impl Default for RawConfig {
             save_hotkey: "ctrl+alt+e".into(),
             folder_hotkey: "ctrl+shift+alt+e".into(),
             annotate_hotkey: "ctrl+shift+alt+q".into(),
-            window_hotkey: "ctrl+alt+printscreen".into(),
+            window_hotkey: "ctrl+shift+alt+q".into(),
             window_pick: true,
             shots_dir: "shots".into(),
             temp_file: "temp.png".into(),
@@ -95,12 +97,10 @@ pub struct Config {
     pub quick_hotkey: Hotkey,
     pub save_hotkey: Hotkey,
     pub folder_hotkey: Hotkey,
-    pub annotate_hotkey: Hotkey,
     pub window_hotkey: Hotkey,
     pub quick_hotkey_label: String,
     pub save_hotkey_label: String,
     pub folder_hotkey_label: String,
-    pub annotate_hotkey_label: String,
     pub window_hotkey_label: String,
     /// Focus mode is offered at all. Off means the hotkey is never registered, so it stays
     /// free for whatever else wants it.
@@ -164,15 +164,12 @@ pub fn load(cli_override: Option<&str>) -> Result<Config, String> {
             .ok_or(format!("invalid save_hotkey: \"{}\"", raw.save_hotkey))?,
         folder_hotkey: parse_hotkey(&raw.folder_hotkey)
             .ok_or(format!("invalid folder_hotkey: \"{}\"", raw.folder_hotkey))?,
-        annotate_hotkey: parse_hotkey(&raw.annotate_hotkey)
-            .ok_or(format!("invalid annotate_hotkey: \"{}\"", raw.annotate_hotkey))?,
         window_hotkey: parse_hotkey(&raw.window_hotkey)
             .ok_or(format!("invalid window_hotkey: \"{}\"", raw.window_hotkey))?,
         window_pick: raw.window_pick,
         quick_hotkey_label: raw.quick_hotkey,
         save_hotkey_label: raw.save_hotkey,
         folder_hotkey_label: raw.folder_hotkey,
-        annotate_hotkey_label: raw.annotate_hotkey,
         window_hotkey_label: raw.window_hotkey,
         temp_path: shots_dir.join(&raw.temp_file),
         saved_dir: shots_dir.join("saved"),
@@ -242,7 +239,7 @@ mod tests {
         let raw: RawConfig = toml::from_str(DEFAULT_CONFIG).expect("default config");
         assert_eq!(raw.quick_hotkey, "ctrl+alt+q");
         assert_eq!(raw.annotate_hotkey, "ctrl+shift+alt+q");
-        assert_eq!(raw.window_hotkey, "ctrl+alt+printscreen");
+        assert_eq!(raw.window_hotkey, "ctrl+shift+alt+q");
         assert!(raw.window_pick, "focus mode ships on");
         assert_eq!(raw.crosshair_style, "lines");
         assert!(raw.copy_to_clipboard);

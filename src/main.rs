@@ -36,8 +36,7 @@ use crate::config::Config;
 const HOTKEY_QUICK: i32 = 1;
 const HOTKEY_SAVE: i32 = 2;
 const HOTKEY_FOLDER: i32 = 3;
-const HOTKEY_ANNOTATE: i32 = 4;
-const HOTKEY_WINDOW: i32 = 5;
+const HOTKEY_WINDOW: i32 = 4;
 
 /// Blocks re-entrant captures if a hotkey fires while the overlay is already open.
 static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
@@ -149,8 +148,8 @@ fn main() {
         tray::add_icon(
             hwnd,
             &format!(
-                "EasyQuickScreenshot — {} quick / {} save / {} annotate",
-                cfg.quick_hotkey_label, cfg.save_hotkey_label, cfg.annotate_hotkey_label
+                "EasyQuickScreenshot — {} capture / {} window / then Q or E to save",
+                cfg.quick_hotkey_label, cfg.window_hotkey_label
             ),
         );
         register_hotkeys(hwnd, cfg);
@@ -184,16 +183,6 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
     {
         failed.push(cfg.folder_hotkey_label.clone());
     }
-    if RegisterHotKey(
-        hwnd,
-        HOTKEY_ANNOTATE,
-        cfg.annotate_hotkey.modifiers,
-        cfg.annotate_hotkey.vk,
-    )
-    .is_err()
-    {
-        failed.push(cfg.annotate_hotkey_label.clone());
-    }
     // Focus mode is opt-out: with it off the binding is never claimed, so nothing else
     // on the machine loses the key.
     if cfg.window_pick
@@ -223,7 +212,6 @@ unsafe fn unregister_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(hwnd, HOTKEY_QUICK);
     let _ = UnregisterHotKey(hwnd, HOTKEY_SAVE);
     let _ = UnregisterHotKey(hwnd, HOTKEY_FOLDER);
-    let _ = UnregisterHotKey(hwnd, HOTKEY_ANNOTATE);
     let _ = UnregisterHotKey(hwnd, HOTKEY_WINDOW);
 }
 
@@ -241,10 +229,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 // Not a capture — just reveal the current save folder. Reads the live
                 // config, so it always opens wherever shots_dir points right now.
                 open_in_explorer(&app.config.saved_dir);
-            } else if (id == HOTKEY_QUICK
-                || id == HOTKEY_SAVE
-                || id == HOTKEY_ANNOTATE
-                || id == HOTKEY_WINDOW)
+            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE || id == HOTKEY_WINDOW)
                 && IN_CAPTURE
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
@@ -300,16 +285,14 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
             return;
         }
     };
-    // Picking a window replaces the drag, not the editor: both land in the annotate phase,
-    // which is where the capture is committed from.
+    // Every hotkey now ends in the editor; they differ only in how the rectangle is
+    // chosen. The destination is picked there — Q writes the temp file, E keeps a copy.
     let start = if hotkey_id == HOTKEY_WINDOW {
         overlay::Start::PickWindow
     } else {
         overlay::Start::Drag
     };
-    let annotating = hotkey_id == HOTKEY_ANNOTATE || hotkey_id == HOTKEY_WINDOW;
-    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, annotating, start)
-    else {
+    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, true, start) else {
         return; // cancelled
     };
     let (x, y, w, h) = sel.rect;
@@ -323,7 +306,7 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
 
     // Annotating picks its destination at commit time: Enter overwrites the temp file,
     // Shift+Enter (or the KEEP button) files a timestamped copy.
-    let keep = if annotating { sel.keeper } else { hotkey_id == HOTKEY_SAVE };
+    let keep = sel.keeper;
     let path = if keep {
         save::timestamped_path(&app.config.saved_dir)
     } else {

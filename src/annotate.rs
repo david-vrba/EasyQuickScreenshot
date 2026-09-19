@@ -1086,8 +1086,8 @@ const HELP_DRAWING: &[(&str, &str)] = &[
     ("drag a corner", "resize it · the opposite corner stays put"),
     ("Ctrl+Z / Ctrl+Y", "undo / redo"),
     ("right-click", "undo, without leaving the mouse"),
-    ("Enter", "save to shots/temp.png"),
-    ("Shift+Enter", "save a timestamped copy"),
+    ("Q  or  Enter", "save to shots/temp.png"),
+    ("E  or  Shift+Enter", "save a timestamped copy"),
     ("Esc", "drop the shape · again to abort the capture"),
 ];
 
@@ -1099,6 +1099,7 @@ const HELP_TYPING: &[(&str, &str)] = &[
     ("← → ↑ ↓", "move the caret"),
     ("Home / End", "start or end of the line"),
     ("Del", "delete forwards"),
+    ("Q  E  R  T …", "just letters in here — nothing is saved or switched"),
     ("Esc", "throw the text away"),
 ];
 
@@ -1335,6 +1336,10 @@ pub fn key_action(vk: u16) -> Option<Action> {
         'P' => Some(Action::Pick(Tool::Pen)),
         'T' => Some(Action::Pick(Tool::Text)),
         'F' => Some(Action::ToggleFill),
+        // The letter you opened the capture with is the letter that finishes it. Reached
+        // only when nothing is being typed, so a Q in a caption stays a Q.
+        'Q' => Some(Action::Commit { keeper: false }),
+        'E' => Some(Action::Commit { keeper: true }),
         c @ '1'..='8' => Some(Action::Color(c as usize - '1' as usize)),
         _ => None,
     }
@@ -1343,6 +1348,22 @@ pub fn key_action(vk: u16) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_letter_that_opened_the_capture_is_the_letter_that_saves_it() {
+        assert!(matches!(
+            key_action(b'Q' as u16),
+            Some(Action::Commit { keeper: false })
+        ));
+        assert!(matches!(
+            key_action(b'E' as u16),
+            Some(Action::Commit { keeper: true })
+        ));
+        // Typing is guarded a level up, in the window procedure: while a caption is open
+        // every key goes into the text and this is never consulted. Nothing here can make
+        // that true, so the guard has to stay where it is.
+        assert!(key_action(b'Z' as u16).is_none(), "an unbound letter does nothing");
+    }
 
     fn shape(tool: Tool, a: (i32, i32), b: (i32, i32)) -> Shape {
         let mut s = Shape::new(tool, PALETTE[0], 4.0, a);

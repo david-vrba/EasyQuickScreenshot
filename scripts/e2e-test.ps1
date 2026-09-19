@@ -52,5 +52,12 @@ foreach ($step in 1..8) {
 Start-Sleep -Milliseconds 100
 [EqsInput]::mouse_event([EqsInput]::LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
 
+# Every capture lands in the editor now, so the letter has to be pressed once more to
+# commit: Q writes the temp file, E keeps a timestamped copy.
+Start-Sleep -Milliseconds 300
+[EqsInput]::keybd_event($vkKey, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 60
+[EqsInput]::keybd_event($vkKey, 0, [EqsInput]::KEYUP, [UIntPtr]::Zero)
+
 Start-Sleep -Milliseconds 800
 Write-Output "done — check the shots folder"

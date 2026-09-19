@@ -20,14 +20,14 @@ save_hotkey = "ctrl+alt+e"
 # Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
 folder_hotkey = "ctrl+shift+alt+e"
 
-# Annotate: same crosshair drag, then a toolbar to draw on the shot before it is written.
-# Enter saves over the temp file, Shift+Enter keeps a timestamped copy.
-annotate_hotkey = "ctrl+shift+alt+q"
-
 # Focus mode: no dragging. Point at a window, it lights up, click it and the whole window
 # goes to the editor. Set to false and the hotkey below is not registered at all.
 window_pick = true
-window_hotkey = "ctrl+alt+printscreen"
+window_hotkey = "ctrl+shift+alt+q"
+
+# Kept so older config files still load. Drawing is no longer a separate mode — both
+# hotkeys above open the editor — so this binding is read and ignored.
+annotate_hotkey = "ctrl+shift+alt+q"
 
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
@@ -134,7 +134,7 @@ pub fn load() -> ConfigDto {
         save_hotkey: str_field(&doc, "save_hotkey", "ctrl+alt+e"),
         folder_hotkey: str_field(&doc, "folder_hotkey", "ctrl+shift+alt+e"),
         annotate_hotkey: str_field(&doc, "annotate_hotkey", "ctrl+shift+alt+q"),
-        window_hotkey: str_field(&doc, "window_hotkey", "ctrl+alt+printscreen"),
+        window_hotkey: str_field(&doc, "window_hotkey", "ctrl+shift+alt+q"),
         window_pick: doc
             .get("window_pick")
             .and_then(|v| v.as_bool())
@@ -180,13 +180,13 @@ fn validate(dto: &ConfigDto) -> Result<(), String> {
     validate_hotkey(&dto.quick_hotkey).map_err(|e| format!("Quick-shot hotkey: {e}"))?;
     validate_hotkey(&dto.save_hotkey).map_err(|e| format!("Save hotkey: {e}"))?;
     validate_hotkey(&dto.folder_hotkey).map_err(|e| format!("Open-folder hotkey: {e}"))?;
-    validate_hotkey(&dto.annotate_hotkey).map_err(|e| format!("Annotate hotkey: {e}"))?;
     validate_hotkey(&dto.window_hotkey).map_err(|e| format!("Focus-mode hotkey: {e}"))?;
+    // `annotate_hotkey` is deliberately absent: the core ignores it, so an old file that
+    // still carries it must not count as a clash with the focus-mode binding.
     let keys = [
         dto.quick_hotkey.trim(),
         dto.save_hotkey.trim(),
         dto.folder_hotkey.trim(),
-        dto.annotate_hotkey.trim(),
         dto.window_hotkey.trim(),
     ];
     if (0..keys.len()).any(|i| keys[i + 1..].iter().any(|k| k.eq_ignore_ascii_case(keys[i]))) {
