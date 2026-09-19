@@ -13,6 +13,9 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   re-opened by double-clicking it; `F` fills a rectangle or circle solid, for blacking
   something out; the key list is behind a `?` button instead of printed under the bar;
   `Enter` = quick, `Shift+Enter` = save
+- `Ctrl+Alt+PrintScreen` — focus mode: point at a window, it lights up under a sliding grey
+  pane, click it and the whole window goes to the editor. No dragging, exact window edges
+  (DWM frame bounds). Off switch in settings, and off means the hotkey is never registered
 - `Ctrl+Shift+Alt+E` — open the current save folder
 - No dimming, no flash, no shutter; overlay can't leak into the shot
 - Multi-monitor + mixed-DPI selection
@@ -27,6 +30,12 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   offering the major until this is done by hand.
 - **winget** package (Scoop is live; the winget PR needs re-filing)
 - Annotate: clicking into text to place the caret, and a text size control of its own
+
+## Next version jump — screen recording
+A different capture path, not a variation on this one: encoding, a frame loop, a stop
+control, audio or no audio, and a file format that is not PNG. It gets its own version
+rather than being folded into a release that is about screenshots.
+Nothing is designed yet — this is the marker that it is the next big thing, not a plan.
 
 ## Considered (not committed — feedback wanted)
 - A full editor window: re-crop saved shots, resize handles, blur redaction

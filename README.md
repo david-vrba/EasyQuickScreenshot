@@ -23,12 +23,35 @@ EasyQuickScreenshot does one thing: **get the pixels you're pointing at into a f
 | `Ctrl+Alt+Q` | **Quick shot** | Saves to a single fixed file, `shots/temp.png`. The next quick shot **overwrites it**. One file, forever — zero folder bloat. |
 | `Ctrl+Alt+E` | **Easy save** | Saves a timestamped PNG to `shots/saved/` for captures you want to keep. |
 | `Ctrl+Shift+Alt+Q` | **Annotate** | Same drag, then a toolbar appears so you can draw on the shot before it's written. |
+| `Ctrl+Alt+PrintScreen` | **Focus mode** | No dragging at all. Point at a window, it lights up, click it — the whole window goes straight to the editor. |
 
 Both modes also copy the capture to the clipboard (configurable), so `Ctrl+V` works immediately.
 
 **Q**uick and **E**asy — that's the name.
 
 There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folder** in Explorer — no capture. It always opens wherever your save folder currently points, so it stays correct even after you change the folder in settings.
+
+## Focus mode — capture a window without drawing a box
+
+Most captures are "that window, all of it". Dragging a rectangle around a window is work you
+should not have to do, and the edges are never quite right.
+
+Press `Ctrl+Alt+PrintScreen` and there is no rectangle to draw. The pointer becomes a hand,
+and the window underneath it is covered by a soft grey pane with a white border. Move the
+mouse and the pane **slides** to the next window, the way the Windows snap preview does.
+Click, and that window — exactly its own edges, not a guess — opens in the editor, where
+`Enter` writes `temp.png` and `Shift+Enter` keeps a timestamped copy.
+
+Over bare desktop the pane covers the whole monitor you are on, so there is no dead spot
+where nothing happens. `Esc` or right-click cancels.
+
+The window list is taken at the instant you press the hotkey, before the overlay exists —
+the overlay spans every monitor, so once it is up it is the only window any point is over.
+Edges come from the DWM frame bounds rather than `GetWindowRect`, which reports several
+invisible pixels of resize border and would put the pane slightly wide of the window.
+
+Turn it off in the settings app, or with `window_pick = false`. Off means the hotkey is
+never registered, so the key stays free for something else.
 
 ## Annotating
 
@@ -149,6 +172,8 @@ quick_hotkey  = "ctrl+alt+q"        # modifiers: ctrl, alt, shift, win
 save_hotkey   = "ctrl+alt+e"        # keys: a-z, 0-9, f1-f24, printscreen, space
 folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
 annotate_hotkey = "ctrl+shift+alt+q"  # capture, then draw on it before saving
+window_pick   = true                # focus mode: pick a whole window, no dragging
+window_hotkey = "ctrl+alt+printscreen"
 shots_dir     = "shots"             # relative paths resolve against this file's folder
 temp_file    = "temp.png"
 copy_to_clipboard = true

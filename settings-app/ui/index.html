@@ -48,6 +48,20 @@
         </div>
 
         <div class="field">
+          <label>Focus-mode hotkey</label>
+          <p class="hint">No dragging: point at a window, it lights up, click it and the whole window goes to the editor.</p>
+          <button class="hotkey" data-hotkey="window_hotkey" type="button"></button>
+        </div>
+
+        <div class="field toggle-field">
+          <label class="toggle">
+            <input type="checkbox" id="window_pick" />
+            <span class="switch"></span>
+            <span>Focus mode on (off leaves the hotkey free for other apps)</span>
+          </label>
+        </div>
+
+        <div class="field">
           <label>Screenshots folder</label>
           <div class="row">
             <input type="text" id="shots_dir" spellcheck="false" />

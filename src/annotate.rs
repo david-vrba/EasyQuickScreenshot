@@ -1150,6 +1150,22 @@ unsafe fn rounded_path(rect: Rect, radius: i32) -> *mut GpPath {
     path
 }
 
+/// Focus mode's pane: the window under the pointer, lit up. Translucent light grey so the
+/// window still reads through it, a white edge so it also reads against a pale background,
+/// and a corner radius in the shape of the Windows snap preview it borrows from.
+/// `clip` bounds the drawing to the area being repainted this frame.
+pub unsafe fn draw_pane(hdc: HDC, rect: Rect, clip: Rect) {
+    let Some(canvas) = Canvas::new(hdc) else { return };
+    GdipSetClipRectI(canvas.0, clip.0, clip.1, clip.2, clip.3, CombineModeReplace);
+    let path = rounded_path(rect, 12);
+    if path.is_null() {
+        return;
+    }
+    with_brush(0x66E8E8E8, |b| GdipFillPath(canvas.0, b, path));
+    with_pen(0xCCFFFFFF, 2.0, |p| GdipDrawPath(canvas.0, p, path));
+    GdipDeletePath(path);
+}
+
 pub unsafe fn draw_help(hdc: HDC, rect: Rect, hint: Hint) {
     if let Some(canvas) = Canvas::new(hdc) {
         let path = rounded_path(rect, 10);

@@ -23,6 +23,8 @@ async function loadConfig() {
   setHotkey("save_hotkey", c.save_hotkey);
   setHotkey("folder_hotkey", c.folder_hotkey);
   setHotkey("annotate_hotkey", c.annotate_hotkey);
+  setHotkey("window_hotkey", c.window_hotkey);
+  document.getElementById("window_pick").checked = c.window_pick;
   document.getElementById("shots_dir").value = c.shots_dir;
   document.getElementById("shots_abs").textContent = "→ " + c.shots_dir_abs;
   document.getElementById("temp_file").value = c.temp_file;
@@ -115,6 +117,8 @@ document.getElementById("save").addEventListener("click", async () => {
   c.save_hotkey = document.querySelector('.hotkey[data-hotkey="save_hotkey"]').textContent.trim();
   c.folder_hotkey = document.querySelector('.hotkey[data-hotkey="folder_hotkey"]').textContent.trim();
   c.annotate_hotkey = document.querySelector('.hotkey[data-hotkey="annotate_hotkey"]').textContent.trim();
+  c.window_hotkey = document.querySelector('.hotkey[data-hotkey="window_hotkey"]').textContent.trim();
+  c.window_pick = document.getElementById("window_pick").checked;
   c.shots_dir = document.getElementById("shots_dir").value;
   c.temp_file = document.getElementById("temp_file").value;
   c.copy_to_clipboard = document.getElementById("copy_to_clipboard").checked;

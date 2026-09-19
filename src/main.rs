@@ -10,6 +10,7 @@ mod config;
 mod overlay;
 mod save;
 mod tray;
+mod window_pick;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -36,6 +37,7 @@ const HOTKEY_QUICK: i32 = 1;
 const HOTKEY_SAVE: i32 = 2;
 const HOTKEY_FOLDER: i32 = 3;
 const HOTKEY_ANNOTATE: i32 = 4;
+const HOTKEY_WINDOW: i32 = 5;
 
 /// Blocks re-entrant captures if a hotkey fires while the overlay is already open.
 static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
@@ -192,6 +194,19 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
     {
         failed.push(cfg.annotate_hotkey_label.clone());
     }
+    // Focus mode is opt-out: with it off the binding is never claimed, so nothing else
+    // on the machine loses the key.
+    if cfg.window_pick
+        && RegisterHotKey(
+            hwnd,
+            HOTKEY_WINDOW,
+            cfg.window_hotkey.modifiers,
+            cfg.window_hotkey.vk,
+        )
+        .is_err()
+    {
+        failed.push(cfg.window_hotkey_label.clone());
+    }
     if !failed.is_empty() {
         message_box(
             &format!(
@@ -209,6 +224,7 @@ unsafe fn unregister_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(hwnd, HOTKEY_SAVE);
     let _ = UnregisterHotKey(hwnd, HOTKEY_FOLDER);
     let _ = UnregisterHotKey(hwnd, HOTKEY_ANNOTATE);
+    let _ = UnregisterHotKey(hwnd, HOTKEY_WINDOW);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -225,7 +241,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 // Not a capture — just reveal the current save folder. Reads the live
                 // config, so it always opens wherever shots_dir points right now.
                 open_in_explorer(&app.config.saved_dir);
-            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE || id == HOTKEY_ANNOTATE)
+            } else if (id == HOTKEY_QUICK
+                || id == HOTKEY_SAVE
+                || id == HOTKEY_ANNOTATE
+                || id == HOTKEY_WINDOW)
                 && IN_CAPTURE
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
@@ -281,8 +300,16 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
             return;
         }
     };
-    let annotating = hotkey_id == HOTKEY_ANNOTATE;
-    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, annotating) else {
+    // Picking a window replaces the drag, not the editor: both land in the annotate phase,
+    // which is where the capture is committed from.
+    let start = if hotkey_id == HOTKEY_WINDOW {
+        overlay::Start::PickWindow
+    } else {
+        overlay::Start::Drag
+    };
+    let annotating = hotkey_id == HOTKEY_ANNOTATE || hotkey_id == HOTKEY_WINDOW;
+    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, annotating, start)
+    else {
         return; // cancelled
     };
     let (x, y, w, h) = sel.rect;
@@ -443,7 +470,11 @@ fn headless_render_test(rest: &[String]) -> i32 {
             Err(_) => 5,
         };
     }
-    let demo = rest.get(6).map(|s| s == "annotate").unwrap_or(false);
+    let demo = match rest.get(6).map(String::as_str) {
+        Some("annotate") => overlay::Demo::Annotating,
+        Some("pick") => overlay::Demo::Picking,
+        _ => overlay::Demo::Selecting,
+    };
     let Ok(bgra) = overlay::render_test_frame(&shot, style, start, cur, demo) else {
         return 4;
     };

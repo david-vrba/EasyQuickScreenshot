@@ -24,6 +24,11 @@ folder_hotkey = "ctrl+shift+alt+e"
 # Enter saves over the temp file, Shift+Enter keeps a timestamped copy.
 annotate_hotkey = "ctrl+shift+alt+q"
 
+# Focus mode: no dragging. Point at a window, it lights up, click it and the whole window
+# goes to the editor. Set to false and the hotkey below is not registered at all.
+window_pick = true
+window_hotkey = "ctrl+alt+printscreen"
+
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
 
@@ -45,6 +50,8 @@ pub struct ConfigDto {
     pub save_hotkey: String,
     pub folder_hotkey: String,
     pub annotate_hotkey: String,
+    pub window_hotkey: String,
+    pub window_pick: bool,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -127,6 +134,11 @@ pub fn load() -> ConfigDto {
         save_hotkey: str_field(&doc, "save_hotkey", "ctrl+alt+e"),
         folder_hotkey: str_field(&doc, "folder_hotkey", "ctrl+shift+alt+e"),
         annotate_hotkey: str_field(&doc, "annotate_hotkey", "ctrl+shift+alt+q"),
+        window_hotkey: str_field(&doc, "window_hotkey", "ctrl+alt+printscreen"),
+        window_pick: doc
+            .get("window_pick")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         shots_dir,
         temp_file,
         copy_to_clipboard: doc
@@ -153,6 +165,8 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
     doc["save_hotkey"] = value(dto.save_hotkey.trim());
     doc["folder_hotkey"] = value(dto.folder_hotkey.trim());
     doc["annotate_hotkey"] = value(dto.annotate_hotkey.trim());
+    doc["window_hotkey"] = value(dto.window_hotkey.trim());
+    doc["window_pick"] = value(dto.window_pick);
     doc["shots_dir"] = value(dto.shots_dir.trim());
     doc["temp_file"] = value(dto.temp_file.trim());
     doc["copy_to_clipboard"] = value(dto.copy_to_clipboard);
@@ -167,11 +181,13 @@ fn validate(dto: &ConfigDto) -> Result<(), String> {
     validate_hotkey(&dto.save_hotkey).map_err(|e| format!("Save hotkey: {e}"))?;
     validate_hotkey(&dto.folder_hotkey).map_err(|e| format!("Open-folder hotkey: {e}"))?;
     validate_hotkey(&dto.annotate_hotkey).map_err(|e| format!("Annotate hotkey: {e}"))?;
+    validate_hotkey(&dto.window_hotkey).map_err(|e| format!("Focus-mode hotkey: {e}"))?;
     let keys = [
         dto.quick_hotkey.trim(),
         dto.save_hotkey.trim(),
         dto.folder_hotkey.trim(),
         dto.annotate_hotkey.trim(),
+        dto.window_hotkey.trim(),
     ];
     if (0..keys.len()).any(|i| keys[i + 1..].iter().any(|k| k.eq_ignore_ascii_case(keys[i]))) {
         return Err("Every hotkey must be different.".into());

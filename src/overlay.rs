@@ -29,13 +29,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow,
+    KillTimer, LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow,
+    SetTimer, ShowWindow,
     TranslateMessage, CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HCURSOR,
     IDC_ARROW,
-    IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, MSG, SW_SHOW, WM_CHAR, WM_ERASEBKGND,
+    IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, MSG, SW_SHOW, WM_CHAR,
+    WM_ERASEBKGND,
     WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_QUIT,
-    WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_RBUTTONDOWN, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
@@ -47,6 +49,7 @@ use crate::annotate::{
 use crate::capture::Screenshot;
 use crate::clipboard;
 use crate::config::CrosshairStyle;
+use crate::window_pick;
 
 const CLASS_NAME: PCWSTR = w!("EQS_OVERLAY");
 const MIN_SELECTION_PX: i32 = 3;
@@ -54,8 +57,28 @@ const MIN_SELECTION_PX: i32 = 3;
 #[derive(PartialEq, Clone, Copy)]
 enum Phase {
     Select,
+    /// Focus mode: no drag. The window under the pointer is lit up and one click takes it.
+    Pick,
     Annotate,
 }
+
+/// How the capture rectangle is chosen.
+#[derive(PartialEq, Clone, Copy)]
+pub enum Start {
+    /// Drag one out.
+    Drag,
+    /// Point at a window and click it.
+    PickWindow,
+}
+
+/// How much of the remaining distance the pane covers each frame, and how often a frame is
+/// drawn. 0.28 at 60fps settles in about a fifth of a second — long enough to read as
+/// movement, short enough that it never feels like waiting.
+const PANE_EASE: f32 = 0.28;
+const PANE_FRAME_MS: u32 = 16;
+const PANE_TIMER: usize = 1;
+/// Room around the pane for its border, so easing never leaves a line of it behind.
+const PANE_MARGIN: i32 = 4;
 
 /// What the overlay hands back. `pixels` is set only for an annotated capture, where the
 /// drawing has already been flattened into the cropped region.
@@ -112,6 +135,19 @@ struct Overlay {
     hover_bar: bool,
     /// Set for the final compose: shapes only, no border, guides, or toolbar.
     exporting: bool,
+
+    // Focus mode
+    /// Every pickable window, topmost first. Collected before the overlay exists, because
+    /// once it is up it covers the screen and there is nothing left to hit-test against.
+    panes: Vec<Rect>,
+    /// The window the pointer is on: where the pane is heading.
+    target: Option<Rect>,
+    /// Where the pane is actually drawn this frame. Fractional, because it slides.
+    shown: Option<(f32, f32, f32, f32)>,
+    /// The slide timer is running. Re-arming a live timer restarts its countdown, and a
+    /// mouse reporting every 8ms would then hold off a 16ms timer forever — the pane would
+    /// only ever move once the pointer stopped.
+    sliding: bool,
 }
 
 /// A drag in progress: a whole shape or the region moving, or one handle of either
@@ -143,6 +179,7 @@ pub fn select_region(
     shot: &Screenshot,
     style: CrosshairStyle,
     annotate: bool,
+    start_with: Start,
 ) -> Option<Selection> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
@@ -169,6 +206,17 @@ pub fn select_region(
         let _ = GetCursorPos(&mut cursor);
 
         let (color, stroke) = annotate::remembered();
+        let cur = (cursor.x - shot.origin_x, cursor.y - shot.origin_y);
+        // Must happen before the overlay window exists: it spans every monitor, so from
+        // the moment it is up it is the only window any point is over.
+        let panes = match start_with {
+            Start::PickWindow => window_pick::panes(
+                (shot.origin_x, shot.origin_y),
+                shot.width,
+                shot.height,
+            ),
+            Start::Drag => Vec::new(),
+        };
         let state = Box::into_raw(Box::new(Overlay {
             back_dc,
             bright_dc,
@@ -178,11 +226,14 @@ pub fn select_region(
             style,
             dragging: false,
             start: (0, 0),
-            cur: (cursor.x - shot.origin_x, cursor.y - shot.origin_y),
+            cur,
             result: None,
             done: false,
             annotate,
-            phase: Phase::Select,
+            phase: match start_with {
+                Start::Drag => Phase::Select,
+                Start::PickWindow => Phase::Pick,
+            },
             sel: (0, 0, 0, 0),
             cells: Vec::new(),
             shapes: Vec::new(),
@@ -200,7 +251,19 @@ pub fn select_region(
             hover: None,
             hover_bar: false,
             exporting: false,
+            panes,
+            target: None,
+            shown: None,
+            sliding: false,
         }));
+
+        // Light up whatever is already under the pointer, so focus mode has something to
+        // show the instant it appears rather than waiting for the first mouse move.
+        if (*state).phase == Phase::Pick {
+            let first = pane_under(&*state, cur);
+            (*state).target = Some(first);
+            (*state).shown = Some(as_shown(first));
+        }
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -387,8 +450,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     let state = &mut *state_ptr;
 
-    if state.phase == Phase::Annotate {
-        return annotate_proc(hwnd, state, msg, wparam, lparam);
+    match state.phase {
+        Phase::Annotate => return annotate_proc(hwnd, state, msg, wparam, lparam),
+        Phase::Pick => return pick_proc(hwnd, state, msg, wparam, lparam),
+        Phase::Select => {}
     }
 
     match msg {
@@ -401,7 +466,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
-            paint(state, hdc);
+            paint(state, hdc, from_rect(ps.rcPaint));
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
@@ -461,6 +526,123 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
+fn as_shown(rect: Rect) -> (f32, f32, f32, f32) {
+    (rect.0 as f32, rect.1 as f32, rect.2 as f32, rect.3 as f32)
+}
+
+/// What a click at this point would take: the window under it, or — over bare desktop —
+/// the monitor it is on, so there is no dead spot where focus mode does nothing.
+unsafe fn pane_under(state: &Overlay, point: (i32, i32)) -> Rect {
+    window_pick::at(&state.panes, point.0, point.1)
+        .unwrap_or_else(|| monitor_at(state, point))
+}
+
+/// Repaint only where the pane was and where it now is. A full frame is tens of megabytes
+/// of blitting on a multi-monitor desktop, which at 60fps is what would make it stutter.
+unsafe fn invalidate_pane(hwnd: HWND, from: Rect, to: Rect) {
+    let (x, y, w, h) = window_pick::dirty(from, to, PANE_MARGIN);
+    let rect = windows::Win32::Foundation::RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    };
+    let _ = InvalidateRect(hwnd, Some(&rect), false);
+}
+
+unsafe fn pick_proc(
+    hwnd: HWND,
+    state: &mut Overlay,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => LRESULT(1),
+        WM_SETCURSOR => {
+            // Nothing is being drawn here, only chosen — the pointing hand says so.
+            SetCursor(LoadCursorW(None, IDC_HAND).unwrap_or_default());
+            LRESULT(1)
+        }
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            paint(state, hdc, from_rect(ps.rcPaint));
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            state.cur = lparam_xy(lparam);
+            let next = pane_under(state, state.cur);
+            if state.target != Some(next) {
+                state.target = Some(next);
+                match state.shown {
+                    // Already on screen: slide it across instead of teleporting.
+                    Some(_) => {
+                        if !state.sliding {
+                            SetTimer(hwnd, PANE_TIMER, PANE_FRAME_MS, None);
+                            state.sliding = true;
+                        }
+                    }
+                    None => {
+                        state.shown = Some(as_shown(next));
+                        invalidate_pane(hwnd, next, next);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == PANE_TIMER => {
+            let (Some(shown), Some(target)) = (state.shown, state.target) else {
+                let _ = KillTimer(hwnd, PANE_TIMER);
+                state.sliding = false;
+                return LRESULT(0);
+            };
+            let was = window_pick::to_rect(shown);
+            let (next, moving) = window_pick::ease(shown, target, PANE_EASE);
+            state.shown = Some(next);
+            if !moving {
+                let _ = KillTimer(hwnd, PANE_TIMER);
+                state.sliding = false;
+            }
+            invalidate_pane(hwnd, was, window_pick::to_rect(next));
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let Some(rect) = state.target else { return LRESULT(0) };
+            let _ = KillTimer(hwnd, PANE_TIMER);
+            state.sliding = false;
+            state.result = Some(rect);
+            if state.annotate {
+                state.sel = rect;
+                state.cells = annotate::layout(rect, monitor_rect(state, rect));
+                state.phase = Phase::Annotate;
+                state.shown = None;
+                let _ = InvalidateRect(hwnd, None, false);
+            } else {
+                state.done = true;
+            }
+            LRESULT(0)
+        }
+        WM_RBUTTONDOWN => {
+            let _ = KillTimer(hwnd, PANE_TIMER);
+            state.done = true;
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 as u16 == VK_ESCAPE.0 => {
+            let _ = KillTimer(hwnd, PANE_TIMER);
+            state.done = true;
+            LRESULT(0)
+        }
+        WM_KILLFOCUS => {
+            let _ = KillTimer(hwnd, PANE_TIMER);
+            state.done = true;
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
 unsafe fn annotate_proc(
     hwnd: HWND,
     state: &mut Overlay,
@@ -473,7 +655,7 @@ unsafe fn annotate_proc(
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
-            paint(state, hdc);
+            paint(state, hdc, from_rect(ps.rcPaint));
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
@@ -698,9 +880,14 @@ unsafe fn help_area(state: &Overlay) -> Rect {
 /// monitors have different heights or vertical offsets — and then a bar that "fits below"
 /// the capture can land on a band of desktop no display covers.
 unsafe fn monitor_rect(state: &Overlay, sel: Rect) -> Rect {
+    monitor_at(state, (sel.0 + sel.2 / 2, sel.1 + sel.3 / 2))
+}
+
+/// The monitor a buffer point sits on, in buffer coordinates.
+unsafe fn monitor_at(state: &Overlay, point: (i32, i32)) -> Rect {
     let centre = POINT {
-        x: state.origin.0 + sel.0 + sel.2 / 2,
-        y: state.origin.1 + sel.1 + sel.3 / 2,
+        x: state.origin.0 + point.0,
+        y: state.origin.1 + point.1,
     };
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -994,9 +1181,23 @@ fn apply(state: &mut Overlay, action: Action) {
     annotate::remember(state.color, state.stroke);
 }
 
-unsafe fn paint(state: &Overlay, hdc: HDC) {
-    compose(state);
-    let _ = BitBlt(hdc, 0, 0, state.width, state.height, state.back_dc, 0, 0, SRCCOPY);
+fn from_rect(r: windows::Win32::Foundation::RECT) -> Rect {
+    (r.left, r.top, r.right - r.left, r.bottom - r.top)
+}
+
+/// Draw `dirty` and put it on screen. Only focus mode asks for less than the whole window:
+/// while the pane slides, recomposing every pixel would cost tens of megabytes a frame.
+unsafe fn paint(state: &Overlay, hdc: HDC, dirty: Rect) {
+    let (dx, dy, dw, dh) = dirty;
+    if state.phase == Phase::Pick {
+        let _ = BitBlt(state.back_dc, dx, dy, dw, dh, state.bright_dc, dx, dy, SRCCOPY);
+        if let Some(shown) = state.shown {
+            annotate::draw_pane(state.back_dc, window_pick::to_rect(shown), dirty);
+        }
+    } else {
+        compose(state);
+    }
+    let _ = BitBlt(hdc, dx, dy, dw, dh, state.back_dc, dx, dy, SRCCOPY);
 }
 
 /// Draws one frame into `state.back_dc`. Pure GDI composition, no window/message-pump
@@ -1007,6 +1208,13 @@ unsafe fn compose(state: &Overlay) {
 
     // Frozen screen at full brightness — no dimming.
     let _ = BitBlt(back, 0, 0, w, h, state.bright_dc, 0, 0, SRCCOPY);
+
+    if state.phase == Phase::Pick {
+        if let Some(shown) = state.shown {
+            annotate::draw_pane(back, window_pick::to_rect(shown), (0, 0, w, h));
+        }
+        return;
+    }
 
     if state.phase == Phase::Annotate {
         annotate::draw_shapes(
@@ -1109,12 +1317,23 @@ unsafe fn compose(state: &Overlay) {
 /// Headless verification hook: composes one frame against a real capture without ever
 /// creating a window, so the exact drawing code can be inspected pixel-for-pixel from
 /// a CLI flag. Returns top-down BGRA pixels.
+/// Which frame the headless render test should compose.
+#[derive(PartialEq, Clone, Copy)]
+pub enum Demo {
+    /// Drag in progress: guides and the selection border.
+    Selecting,
+    /// One of every annotate tool, the toolbar and the shortcut panel.
+    Annotating,
+    /// Focus mode with the window at the given point lit up.
+    Picking,
+}
+
 pub fn render_test_frame(
     shot: &Screenshot,
     style: CrosshairStyle,
     start: (i32, i32),
     cur: (i32, i32),
-    annotate_demo: bool,
+    demo: Demo,
 ) -> Result<Vec<u8>, String> {
     unsafe {
         let screen_dc = GetDC(HWND::default());
@@ -1146,7 +1365,7 @@ pub fn render_test_frame(
             cur,
             result: None,
             done: false,
-            annotate: annotate_demo,
+            annotate: demo == Demo::Annotating,
             phase: Phase::Select,
             sel,
             cells: Vec::new(),
@@ -1165,9 +1384,28 @@ pub fn render_test_frame(
             hover: Some(Target::ShapeBody(0)),
             hover_bar: false,
             exporting: false,
+            panes: Vec::new(),
+            target: None,
+            shown: None,
+            sliding: false,
         };
 
-        if annotate_demo {
+        if demo == Demo::Picking {
+            // The real window list off the live desktop, so the frame shows the pane over an
+            // actual window rather than a rectangle someone typed in.
+            state.phase = Phase::Pick;
+            state.dragging = false;
+            state.panes = window_pick::panes(
+                (shot.origin_x, shot.origin_y),
+                shot.width,
+                shot.height,
+            );
+            let lit = pane_under(&state, start);
+            state.target = Some(lit);
+            state.shown = Some(as_shown(lit));
+        }
+
+        if demo == Demo::Annotating {
             // One of every tool, so a single frame proves the whole render path.
             state.phase = Phase::Annotate;
             state.dragging = false;
@@ -1282,6 +1520,10 @@ pub fn export_test(
             hover: Some(Target::ShapeBody(0)),
             hover_bar: false,
             exporting: false,
+            panes: Vec::new(),
+            target: None,
+            shown: None,
+            sliding: false,
         };
         state.cells = annotate::layout(sel, monitor_rect(&state, sel));
         let pixels = export_annotated(&mut state);
