@@ -18,6 +18,10 @@ pub fn write_png_atomic(path: &Path, bgra: &[u8], width: i32, height: i32) -> Re
 
 fn encode_png(path: &Path, bgra: &[u8], width: i32, height: i32) -> Result<(), String> {
     let mut rgba = Vec::with_capacity(bgra.len());
+    // clippy prefers `as_chunks::<4>()`, which would raise the Rust this builds on for one
+    // line of no benefit. The capture buffer is always whole BGRA pixels, so the remainder
+    // `chunks_exact` drops is always empty.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     for px in bgra.chunks_exact(4) {
         rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
     }

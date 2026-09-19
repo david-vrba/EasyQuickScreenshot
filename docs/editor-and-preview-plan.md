@@ -1,6 +1,24 @@
 # EasyQuickScreenshot — Annotation & Capture-FX plan
 
-Status: **Epic 1 BUILT 2026-08-31, extended 2026-09-05.** Epics 2–3 are still design only.
+Status: **Epic 1 BUILT 2026-08-31, and extended well past what this plan describes.** Epics 2–3
+are still design only. Read the Rev 5 note below before treating anything here as outstanding —
+several "Tier 2" items shipped, and this document is the older half of the story.
+
+> **Rev 5 — 2026-09-19. What shipped after Rev 4, none of it described below:**
+> - **Resize handles, on shapes and on the capture region** (v0.5.0). Rev 4's "still no resize
+>   handles — that stays Tier 2" is no longer true.
+> - **Snapshot undo/redo** covering moves and resizes, not just added shapes (v0.5.0).
+> - **Multi-line, re-editable text** — `Enter` is a new line, `Ctrl+Enter` places it, and
+>   double-clicking placed text reopens it (v0.6.0).
+> - **`F` solid fill** for rectangles and circles, for blacking things out (v0.7.0).
+> - **The shortcut list moved behind a `?` button** rather than printed under the bar (v0.8.0).
+> - **Focus mode** — `Ctrl+Shift+Alt+Q`, pick a whole window, no drag (v0.9.0). It has its own
+>   module, `src/window_pick.rs`.
+> - **Every capture opens the editor**, and the letter that opened it commits it (v0.10.0), so
+>   "escalate to the editor" as a separate idea no longer applies.
+> - **The no-dirty-rect note below is now half wrong.** It still holds for the drawing phase.
+>   Focus mode does repaint by rectangle, because a pane sliding across a 6400x1440 desktop
+>   at 60fps cannot afford a full frame.
 Owner: David. Drafted 2026-07-09 · Rev 2 2026-07-27 (quick-annotate flow) · Rev 3 2026-08-31 (Epic 1 shipped) · **Rev 4 2026-09-05 (text + move added)**.
 
 > **Rev 4 — David overruled two Rev-2 decisions, and he was right:**

@@ -13,7 +13,7 @@ They coordinate through the filesystem plus one Win32 message: the tray menu spa
 
 ## What this program is (the core, `eqs.exe`)
 
-A single resident Win32 process. One hidden window owns a tray icon and four global hotkeys: three run a synchronous capture flow (quick / save / annotate), the fourth just opens the current save folder in Explorer (no capture). A capture press runs one synchronous flow and returns to the message loop. There are no threads, no async, no state between captures.
+A single resident Win32 process. One hidden window owns a tray icon and four global hotkeys: three run a synchronous capture flow (quick / save / focus mode), the fourth just opens the current save folder in Explorer (no capture). Every capture ends in the annotate phase, where the letter that opened it commits it — `Ctrl+Alt+Q` … `Q`, `Ctrl+Alt+E` … `E`. A capture press runs one synchronous flow and returns to the message loop. There are no threads, no async, no state between captures.
 
 ```
 hotkey pressed
@@ -90,7 +90,7 @@ Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no 
 - `eqs.exe --render-test SX SY W H lines|cursor out.png [annotate|export]` — composes one real overlay frame over a live capture with no window, so the drawing code is verifiable pixel-for-pixel from a screenshot diff. Same exit-code scheme. Adding `annotate` renders the annotate phase instead: one of every tool plus the toolbar and the `?` panel, which covers the whole GDI+ path in a single frame. Adding `export` renders what that same frame *saves*, so a diff of the two proves the chrome never reaches the file. Adding `pick` renders focus mode instead, with the pane over whichever real window is at `SX SY`.
 - `cargo test` — unit tests for the annotate geometry and toolbar layout (Shift constraints, jitter filter, degenerate-click discard, keeping the bar on the captured monitor, click hit-testing) and for config parsing (the default the app writes on first run, and `config.example.toml`, both of which must satisfy `deny_unknown_fields`). No window or desktop needed, so CI runs them. `cargo test --manifest-path settings-app/Cargo.toml` covers the settings app's comment-preserving config write.
 - `eqs.exe --config path.toml` — run against a throwaway config (isolated shots dir, clipboard off).
-- Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` for save mode) against a running instance started with a throwaway `--config` — it injects the hotkey + a drag and the output file should appear. It moves the real mouse briefly.
+- Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` for save mode) against a running instance started with a throwaway `--config` — it injects the hotkey, a drag, then the same letter again to commit, and the output file should appear. It moves the real mouse briefly.
 
 ## Build
 
