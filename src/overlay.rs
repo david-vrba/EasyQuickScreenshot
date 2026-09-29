@@ -10,16 +10,18 @@
 // before it is committed. Nothing extra is created for it — no window, no process.
 
 use std::ffi::c_void;
+use std::time::Instant;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
+    CreateRectRgn, DeleteDC, GetUpdateRgn, SelectClipRgn, HRGN,
     DeleteObject, EndPaint, GetDC, GetDIBits, GetMonitorInfoW, GetStockObject, InvalidateRect,
     LineTo, MonitorFromPoint, MoveToEx, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     Rectangle, ReleaseDC, SelectObject, SetBkMode, SetROP2, SetTextColor, TextOutW,
     BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HBITMAP, HDC, NULL_BRUSH,
+    BITMAPINFOHEADER, BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HDC, NULL_BRUSH,
     PAINTSTRUCT, R2_COPYPEN, R2_NOT, SRCCOPY, TRANSPARENT, WHITE_PEN,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -43,8 +45,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
 
 use crate::annotate::{
-    self, Action, BarState, Cell, Handle, History, Hint, Rect, Shape, TextInput, Tool, Typing,
-    PALETTE, WIDTHS,
+    self, Action, BarState, Cell, Handle, History, Hint, Rect, Restyle, Shape, TextInput, Tool,
+    Typing, PALETTE, WIDTHS,
 };
 use crate::capture::Screenshot;
 use crate::clipboard;
@@ -52,6 +54,18 @@ use crate::config::CrosshairStyle;
 use crate::window_pick;
 
 const CLASS_NAME: PCWSTR = w!("EQS_OVERLAY");
+
+thread_local! {
+    /// When the last overlay was shown, and when its first frame was drawn. Read once by
+    /// the timing log after the capture ends; the overlay itself never looks at it.
+    static LAST_FIRST_FRAME: std::cell::Cell<Option<(Instant, Instant)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The last overlay's (shown, first frame drawn) moments, taken so they are reported once.
+pub fn take_first_frame() -> Option<(Instant, Instant)> {
+    LAST_FIRST_FRAME.with(std::cell::Cell::take)
+}
 const MIN_SELECTION_PX: i32 = 3;
 
 #[derive(PartialEq, Clone, Copy)]
@@ -145,6 +159,9 @@ struct Overlay {
     target: Option<Rect>,
     /// Where the pane is actually drawn this frame. Fractional, because it slides.
     shown: Option<(f32, f32, f32, f32)>,
+    /// When the window appeared, and when its first frame was drawn. For the timing log.
+    shown_at: Option<Instant>,
+    painted_at: Option<Instant>,
     /// The slide timer is running. Re-arming a live timer restarts its countdown, and a
     /// mouse reporting every 8ms would then hold off a 16ms timer forever — the pane would
     /// only ever move once the pointer stopped.
@@ -189,16 +206,10 @@ pub fn select_region(
         let screen_dc = GetDC(HWND::default());
         let bright_dc = CreateCompatibleDC(screen_dc);
         let back_dc = CreateCompatibleDC(screen_dc);
-        let bright_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &shot.pixels);
+        // The capture's own bitmap: painted from in place, never copied.
+        let bright_bmp = shot.bitmap();
         let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
         ReleaseDC(HWND::default(), screen_dc);
-
-        let Some(bright_bmp) = bright_bmp else {
-            let _ = DeleteObject(back_bmp);
-            let _ = DeleteDC(bright_dc);
-            let _ = DeleteDC(back_dc);
-            return None;
-        };
         let old_bright = SelectObject(bright_dc, bright_bmp);
         let old_back = SelectObject(back_dc, back_bmp);
 
@@ -256,6 +267,8 @@ pub fn select_region(
             target: None,
             shown: None,
             sliding: false,
+            shown_at: None,
+            painted_at: None,
         }));
 
         // Light up whatever is already under the pointer, so focus mode has something to
@@ -285,6 +298,7 @@ pub fn select_region(
             Ok(hwnd) => {
                 let _ = ShowWindow(hwnd, SW_SHOW);
                 let _ = SetForegroundWindow(hwnd);
+                (*state).shown_at = Some(Instant::now());
 
                 let mut msg = MSG::default();
                 loop {
@@ -320,10 +334,11 @@ pub fn select_region(
 
         SelectObject(bright_dc, old_bright);
         SelectObject(back_dc, old_back);
-        let _ = DeleteObject(bright_bmp);
         let _ = DeleteObject(back_bmp);
         let _ = DeleteDC(bright_dc);
         let _ = DeleteDC(back_dc);
+        let frame = (*state).shown_at.zip((*state).painted_at);
+        LAST_FIRST_FRAME.with(|c| c.set(frame));
         drop(Box::from_raw(state));
 
         result
@@ -395,25 +410,6 @@ unsafe fn register_class_once(instance: windows::Win32::Foundation::HINSTANCE) {
     });
 }
 
-unsafe fn dib_from_pixels(dc: HDC, width: i32, height: i32, pixels: &[u8]) -> Option<HBITMAP> {
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let bmp = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
-    Some(bmp)
-}
-
 fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
     let x = (lparam.0 & 0xffff) as u16 as i16 as i32;
     let y = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
@@ -465,15 +461,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(1)
         }
         WM_PAINT => {
+            // The update region has to be read before BeginPaint, which clears it.
+            let dirty = CreateRectRgn(0, 0, 0, 0);
+            GetUpdateRgn(hwnd, dirty, false);
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
+            // Clipping the back buffer to the update region makes the compose touch only
+            // what changed: a mouse move repaints a few thin strips instead of 37 MB.
+            SelectClipRgn(state.back_dc, dirty);
             paint(state, hdc, from_rect(ps.rcPaint));
+            SelectClipRgn(state.back_dc, HRGN::default());
             let _ = EndPaint(hwnd, &ps);
+            let _ = DeleteObject(dirty);
+            state.painted_at.get_or_insert_with(Instant::now);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
+            let before = select_marks(state);
             state.cur = lparam_xy(lparam);
-            let _ = InvalidateRect(hwnd, None, false);
+            for mark in before.iter().chain(select_marks(state).iter()) {
+                invalidate(hwnd, *mark);
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -591,6 +599,7 @@ unsafe fn pick_proc(
             let hdc = BeginPaint(hwnd, &mut ps);
             paint(state, hdc, from_rect(ps.rcPaint));
             let _ = EndPaint(hwnd, &ps);
+            state.painted_at.get_or_insert_with(Instant::now);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -1197,10 +1206,34 @@ fn apply(state: &mut Overlay, action: Action) {
         }
     }
     if let Some((t, _)) = state.typing.as_mut() {
+        // Mid-caption, the caption is what the change is for.
         t.color = PALETTE[state.color];
         t.width = WIDTHS[state.stroke];
+    } else if let Some(change) = restyle_of(action, state) {
+        restyle_last_shape(state, change);
     }
     annotate::remember(state.color, state.stroke);
+}
+
+/// The toolbar action as a change to how a shape looks, if it is one.
+fn restyle_of(action: Action, state: &Overlay) -> Option<Restyle> {
+    match action {
+        Action::Color(i) => Some(Restyle::Color(PALETTE[i])),
+        Action::Width(i) => Some(Restyle::Width(WIDTHS[i])),
+        Action::ToggleFill => Some(Restyle::Fill(state.fill)),
+        _ => None,
+    }
+}
+
+fn restyle_last_shape(state: &mut Overlay, change: Restyle) {
+    let Some(next) = state.shapes.last().and_then(|s| annotate::restyled(s, change, state.tool))
+    else {
+        return;
+    };
+    state.history.checkpoint_restyle(&state.shapes, change);
+    if let Some(last) = state.shapes.last_mut() {
+        *last = next;
+    }
 }
 
 fn from_rect(r: windows::Win32::Foundation::RECT) -> Rect {
@@ -1359,16 +1392,10 @@ pub fn render_test_frame(
         let screen_dc = GetDC(HWND::default());
         let bright_dc = CreateCompatibleDC(screen_dc);
         let back_dc = CreateCompatibleDC(screen_dc);
-        let bright_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &shot.pixels);
+        // The capture's own bitmap: painted from in place, never copied.
+        let bright_bmp = shot.bitmap();
         let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
         ReleaseDC(HWND::default(), screen_dc);
-
-        let Some(bright_bmp) = bright_bmp else {
-            let _ = DeleteObject(back_bmp);
-            let _ = DeleteDC(bright_dc);
-            let _ = DeleteDC(back_dc);
-            return Err("failed to build source DIB".into());
-        };
         let old_bright = SelectObject(bright_dc, bright_bmp);
         let old_back = SelectObject(back_dc, back_bmp);
 
@@ -1408,6 +1435,8 @@ pub fn render_test_frame(
             target: None,
             shown: None,
             sliding: false,
+            shown_at: None,
+            painted_at: None,
         };
 
         if demo == Demo::Picking {
@@ -1473,7 +1502,6 @@ pub fn render_test_frame(
 
         SelectObject(bright_dc, old_bright);
         SelectObject(back_dc, old_back);
-        let _ = DeleteObject(bright_bmp);
         let _ = DeleteObject(back_bmp);
         let _ = DeleteDC(bright_dc);
         let _ = DeleteDC(back_dc);
@@ -1485,6 +1513,49 @@ pub fn render_test_frame(
 /// Headless check for the commit path: builds the same demo annotation, then runs the real
 /// export. Proves the crop is the right size, carries the drawing, and excludes the toolbar
 /// and selection border — the three ways flattening can silently go wrong.
+/// Where the time goes between a hotkey press and the first frame, measured on the real
+/// code: the screen grab, the back buffer, and the first full-frame blit. Run from
+/// `eqs --time-startup`; prints milliseconds per phase.
+pub fn startup_timing(rounds: usize) -> String {
+    let mut out = String::new();
+    for round in 1..=rounds {
+        let t = std::time::Instant::now();
+        let Ok(shot) = crate::capture::capture_virtual_screen() else {
+            return "capture failed".into();
+        };
+        let grab = t.elapsed();
+        unsafe {
+            let screen_dc = GetDC(HWND::default());
+            let bright_dc = CreateCompatibleDC(screen_dc);
+            let back_dc = CreateCompatibleDC(screen_dc);
+            let t = std::time::Instant::now();
+            let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
+            let back = t.elapsed();
+            ReleaseDC(HWND::default(), screen_dc);
+            let old_bright = SelectObject(bright_dc, shot.bitmap());
+            let old_back = SelectObject(back_dc, back_bmp);
+            let t = std::time::Instant::now();
+            let _ = BitBlt(back_dc, 0, 0, shot.width, shot.height, bright_dc, 0, 0, SRCCOPY);
+            let first_blit = t.elapsed();
+            SelectObject(bright_dc, old_bright);
+            SelectObject(back_dc, old_back);
+            let _ = DeleteObject(back_bmp);
+            let _ = DeleteDC(bright_dc);
+            let _ = DeleteDC(back_dc);
+            out.push_str(&format!(
+                "round {round}: grab {:>4}ms  back-buffer {:>4}ms  first-blit {:>4}ms  = {:>4}ms  ({}x{})\n",
+                grab.as_millis(),
+                back.as_millis(),
+                first_blit.as_millis(),
+                (grab + back + first_blit).as_millis(),
+                shot.width,
+                shot.height,
+            ));
+        }
+    }
+    out
+}
+
 pub fn export_test(
     shot: &Screenshot,
     start: (i32, i32),
@@ -1494,16 +1565,10 @@ pub fn export_test(
         let screen_dc = GetDC(HWND::default());
         let bright_dc = CreateCompatibleDC(screen_dc);
         let back_dc = CreateCompatibleDC(screen_dc);
-        let bright_bmp = dib_from_pixels(screen_dc, shot.width, shot.height, &shot.pixels);
+        // The capture's own bitmap: painted from in place, never copied.
+        let bright_bmp = shot.bitmap();
         let back_bmp = CreateCompatibleBitmap(screen_dc, shot.width, shot.height);
         ReleaseDC(HWND::default(), screen_dc);
-
-        let Some(bright_bmp) = bright_bmp else {
-            let _ = DeleteObject(back_bmp);
-            let _ = DeleteDC(bright_dc);
-            let _ = DeleteDC(back_dc);
-            return Err("failed to build source DIB".into());
-        };
         let old_bright = SelectObject(bright_dc, bright_bmp);
         let old_back = SelectObject(back_dc, back_bmp);
 
@@ -1544,13 +1609,14 @@ pub fn export_test(
             target: None,
             shown: None,
             sliding: false,
+            shown_at: None,
+            painted_at: None,
         };
         state.cells = annotate::layout(sel, monitor_rect(&state, sel));
         let pixels = export_annotated(&mut state);
 
         SelectObject(bright_dc, old_bright);
         SelectObject(back_dc, old_back);
-        let _ = DeleteObject(bright_bmp);
         let _ = DeleteObject(back_bmp);
         let _ = DeleteDC(bright_dc);
         let _ = DeleteDC(back_dc);
@@ -1589,17 +1655,112 @@ fn demo_shapes((sx, sy, sw, sh): Rect) -> Vec<Shape> {
     ]
 }
 
+/// Below-right of the selection, clamped to the screen.
+fn size_label_at(state: &Overlay, sx: i32, sy: i32, sh: i32) -> (i32, i32) {
+    label_at((state.width, state.height), sx, sy, sh)
+}
+
+fn label_at((w, h): (i32, i32), sx: i32, sy: i32, sh: i32) -> (i32, i32) {
+    ((sx + 4).min(w - 80), (sy + sh + 6).min(h - 20))
+}
+
+/// Every strip the selection phase draws on in one frame: the two guide lines, the four
+/// sides of the border, and the size label. A mouse move changes only these, so the old
+/// set and the new set are all that needs repainting. Each is padded past the 1px it
+/// covers, because the border sits one pixel outside the selection on every side.
+fn select_marks(state: &Overlay) -> Vec<Rect> {
+    let drag = state.dragging.then_some(state.start);
+    let lines = state.style == CrosshairStyle::Lines;
+    marks_for(state.cur, drag, lines, (state.width, state.height))
+}
+
+fn marks_for(
+    cur: (i32, i32),
+    drag_from: Option<(i32, i32)>,
+    lines: bool,
+    size: (i32, i32),
+) -> Vec<Rect> {
+    let (w, h) = size;
+    let mut marks = Vec::with_capacity(7);
+    if lines && cur.0 >= 0 {
+        marks.push((cur.0 - 1, 0, 3, h));
+        marks.push((0, cur.1 - 1, w, 3));
+    }
+    if let Some(start) = drag_from {
+        let (sx, sy, sw, sh) = normalized(start, cur);
+        let (x0, y0, x1, y1) = (sx - 2, sy - 2, sx + sw + 2, sy + sh + 2);
+        marks.push((x0, y0, x1 - x0, 3));
+        marks.push((x0, y1 - 3, x1 - x0, 3));
+        marks.push((x0, y0, 3, y1 - y0));
+        marks.push((x1 - 3, y0, 3, y1 - y0));
+        let (tx, ty) = label_at(size, sx, sy, sh);
+        marks.push((tx - 2, ty - 2, 120, 30));
+    }
+    marks
+}
+
+unsafe fn invalidate(hwnd: HWND, (x, y, w, h): Rect) {
+    let rect = windows::Win32::Foundation::RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    };
+    let _ = InvalidateRect(hwnd, Some(&rect), false);
+}
+
 unsafe fn draw_size_label(state: &Overlay, dc: HDC, sx: i32, sy: i32, sw: i32, sh: i32) {
     let text: Vec<u16> = format!("{} x {}", sw, sh).encode_utf16().collect();
     let old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(dc, TRANSPARENT);
-    // Place below-right of the selection, clamped to the screen.
-    let tx = (sx + 4).min(state.width - 80);
-    let ty = (sy + sh + 6).min(state.height - 20);
+    let (tx, ty) = size_label_at(state, sx, sy, sh);
     // Shadow + white text so it reads on any background.
     SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00000000));
     let _ = TextOutW(dc, tx + 1, ty + 1, &text);
     SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00FFFFFF));
     let _ = TextOutW(dc, tx, ty, &text);
     SelectObject(dc, old_font);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn covered(marks: &[Rect], x: i32, y: i32) -> bool {
+        marks
+            .iter()
+            .any(|&(mx, my, mw, mh)| x >= mx && x < mx + mw && y >= my && y < my + mh)
+    }
+
+    #[test]
+    fn a_drag_repaints_every_pixel_the_border_draws() {
+        // The border is Rectangle(sx-1, sy-1, sx+sw+1, sy+sh+1) with a 1px pen: its pixels
+        // run from sx-1 to sx+sw inclusive. Any of them outside the marks would stay on
+        // screen after the next mouse move as a trail of stale outline.
+        let cases = [((100, 100), (400, 300)), ((400, 300), (100, 100)), ((50, 60), (51, 62))];
+        for (start, cur) in cases {
+            let marks = marks_for(cur, Some(start), true, (1920, 1080));
+            let (sx, sy, sw, sh) = normalized(start, cur);
+            for x in (sx - 1)..=(sx + sw) {
+                assert!(covered(&marks, x, sy - 1), "top edge at x={}", x);
+                assert!(covered(&marks, x, sy + sh), "bottom edge at x={}", x);
+            }
+            for y in (sy - 1)..=(sy + sh) {
+                assert!(covered(&marks, sx - 1, y), "left edge at y={}", y);
+                assert!(covered(&marks, sx + sw, y), "right edge at y={}", y);
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_repaints_both_guide_lines() {
+        let marks = marks_for((300, 200), None, true, (1920, 1080));
+        assert!((0..1080).all(|y| covered(&marks, 300, y)), "the whole vertical line");
+        assert!((0..1920).all(|x| covered(&marks, x, 200)), "the whole horizontal line");
+    }
+
+    #[test]
+    fn the_cursor_style_draws_no_lines_to_repaint() {
+        assert!(marks_for((300, 200), None, false, (1920, 1080)).is_empty());
+    }
 }

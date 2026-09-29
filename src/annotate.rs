@@ -360,16 +360,51 @@ fn bounds_of(a: (i32, i32), b: (i32, i32)) -> Rect {
 /// keeps a long session from growing without bound.
 const HISTORY_LIMIT: usize = 64;
 
+/// A change the toolbar makes to how shapes look. It goes to the next shape, and to the
+/// one just drawn as well — pick red after drawing a rectangle and the rectangle turns red.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Restyle {
+    Color(u32),
+    Width(f32),
+    Fill(bool),
+}
+
+/// What `last` becomes under `change`, or None when it should be left alone.
+///
+/// Only a shape drawn with the tool that is still selected takes the change. Drawing a
+/// rectangle and pressing `F` means "fill that". Switching to the arrow first and then
+/// picking blue means "the next arrow is blue" — recolouring the rectangle there would
+/// punish the person for choosing the colour before drawing.
+///
+/// The caller passes the end of the shape list, read fresh each time. Never keep an index
+/// to "the last shape": an index outlives the undo that removes its shape, and a stale one
+/// is exactly what crashed v0.6.0.
+pub fn restyled(last: &Shape, change: Restyle, tool: Tool) -> Option<Shape> {
+    if last.tool != tool {
+        return None;
+    }
+    let mut next = last.clone();
+    match change {
+        Restyle::Color(c) => next.color = c,
+        Restyle::Width(w) => next.width = w,
+        Restyle::Fill(f) if matches!(last.tool, Tool::Rect | Tool::Circle) => next.filled = f,
+        Restyle::Fill(_) => return None,
+    }
+    (next != *last).then_some(next)
+}
+
 /// Snapshots of the drawing from before each edit. Covers moves and resizes, not just
 /// added shapes, so undo never reaches past an edit it cannot see and deletes something else.
 pub struct History {
     past: Vec<Vec<Shape>>,
     future: Vec<Vec<Shape>>,
+    /// The restyle the newest snapshot was taken for, while nothing else has happened since.
+    restyling: Option<(std::mem::Discriminant<Restyle>, usize)>,
 }
 
 impl History {
     pub fn new() -> History {
-        History { past: Vec::new(), future: Vec::new() }
+        History { past: Vec::new(), future: Vec::new(), restyling: None }
     }
 
     /// Record what is about to change. A new edit is a new branch, so it also drops
@@ -380,6 +415,19 @@ impl History {
             self.past.remove(0);
         }
         self.future.clear();
+        self.restyling = None;
+    }
+
+    /// Like `checkpoint`, but a run of the same kind of restyle on the same shape shares
+    /// one snapshot. Rolling the wheel through five sizes, or trying three colours, is then
+    /// one undo back to where it started instead of five.
+    pub fn checkpoint_restyle(&mut self, current: &[Shape], change: Restyle) {
+        let key = (std::mem::discriminant(&change), current.len());
+        if self.restyling == Some(key) {
+            return;
+        }
+        self.checkpoint(current);
+        self.restyling = Some(key);
     }
 
     /// Drop the newest snapshot when the edit it guarded changed nothing, so a press that
@@ -387,16 +435,19 @@ impl History {
     pub fn forget_if_unchanged(&mut self, current: &[Shape]) {
         if self.past.last().is_some_and(|p| p.as_slice() == current) {
             self.past.pop();
+            self.restyling = None;
         }
     }
 
     pub fn undo(&mut self, current: &mut Vec<Shape>) {
+        self.restyling = None;
         if let Some(previous) = self.past.pop() {
             self.future.push(std::mem::replace(current, previous));
         }
     }
 
     pub fn redo(&mut self, current: &mut Vec<Shape>) {
+        self.restyling = None;
         if let Some(next) = self.future.pop() {
             self.past.push(std::mem::replace(current, next));
         }
@@ -762,6 +813,12 @@ unsafe fn ensure_gdiplus() {
         let mut token = 0usize;
         let _ = GdiplusStartup(&mut token, &input, std::ptr::null_mut());
     });
+}
+
+/// Start GDI+ now rather than on the first drawing of the first capture, which would
+/// otherwise pay for it at the moment the toolbar is meant to appear.
+pub fn warm_up() {
+    unsafe { ensure_gdiplus() }
 }
 
 struct Canvas(*mut GpGraphics);
@@ -1348,6 +1405,71 @@ pub fn key_action(vk: u16) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_made_right_after_drawing_lands_on_that_shape() {
+        let rect = shape(Tool::Rect, (0, 0), (50, 50));
+        let filled = restyled(&rect, Restyle::Fill(true), Tool::Rect).expect("fills");
+        assert!(filled.filled);
+        let red = restyled(&rect, Restyle::Color(PALETTE[3]), Tool::Rect).expect("recolours");
+        assert_eq!(red.color, PALETTE[3]);
+        let thick = restyled(&rect, Restyle::Width(WIDTHS[2]), Tool::Rect).expect("thickens");
+        assert_eq!(thick.width, WIDTHS[2]);
+    }
+
+    #[test]
+    fn a_change_made_after_switching_tools_waits_for_the_next_shape() {
+        let rect = shape(Tool::Rect, (0, 0), (50, 50));
+        assert!(restyled(&rect, Restyle::Color(PALETTE[3]), Tool::Arrow).is_none());
+    }
+
+    #[test]
+    fn only_rectangles_and_circles_can_be_filled() {
+        let arrow = shape(Tool::Arrow, (0, 0), (50, 50));
+        assert!(restyled(&arrow, Restyle::Fill(true), Tool::Arrow).is_none());
+        let circle = shape(Tool::Circle, (0, 0), (50, 50));
+        assert!(restyled(&circle, Restyle::Fill(true), Tool::Circle).is_some());
+    }
+
+    #[test]
+    fn a_change_to_what_it_already_is_costs_nothing() {
+        let rect = shape(Tool::Rect, (0, 0), (50, 50));
+        assert!(restyled(&rect, Restyle::Color(rect.color), Tool::Rect).is_none());
+    }
+
+    #[test]
+    fn rolling_the_wheel_is_one_undo_back_to_the_start() {
+        let mut history = History::new();
+        let mut shapes = vec![shape(Tool::Rect, (0, 0), (50, 50))];
+        let original = shapes.clone();
+        for w in [WIDTHS[0], WIDTHS[2], WIDTHS[1] + 0.5] {
+            let change = Restyle::Width(w);
+            let next = restyled(shapes.last().unwrap(), change, Tool::Rect).unwrap();
+            history.checkpoint_restyle(&shapes, change);
+            *shapes.last_mut().unwrap() = next;
+        }
+        history.undo(&mut shapes);
+        assert!(shapes == original, "one undo undoes the whole roll");
+    }
+
+    #[test]
+    fn a_new_shape_between_two_restyles_keeps_them_apart() {
+        let mut history = History::new();
+        let mut shapes = vec![shape(Tool::Rect, (0, 0), (50, 50))];
+        let change = Restyle::Color(PALETTE[2]);
+        history.checkpoint_restyle(&shapes, change);
+        shapes[0].color = PALETTE[2];
+        let after_first = shapes.clone();
+
+        history.checkpoint(&shapes);
+        shapes.push(shape(Tool::Rect, (60, 60), (90, 90)));
+        history.checkpoint_restyle(&shapes, change);
+        shapes[1].color = PALETTE[2];
+
+        history.undo(&mut shapes);
+        history.undo(&mut shapes);
+        assert!(shapes == after_first, "the second restyle and the new shape undo separately");
+    }
 
     #[test]
     fn the_letter_that_opened_the_capture_is_the_letter_that_saves_it() {

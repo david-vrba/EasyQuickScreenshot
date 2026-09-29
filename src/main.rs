@@ -23,8 +23,9 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageTime, GetMessageW,
     GetWindowLongPtrW, MessageBoxW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW,
     TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_ICONWARNING, MB_OK, MSG, SW_SHOWNORMAL,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
@@ -90,6 +91,11 @@ fn main() {
     // Headless test hook: eqs --render-test SX SY W H (lines|cursor) out.png
     // Composes one real overlay frame (guides + selection border) with no window/message
     // pump, so the drawing code can be verified pixel-for-pixel from a screenshot diff.
+    if args.iter().any(|a| a == "--time-startup") {
+        print_to_console(&overlay::startup_timing(5));
+        return;
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--render-test") {
         std::process::exit(headless_render_test(&args[i + 1..]));
     }
@@ -111,6 +117,7 @@ fn main() {
         }
     };
     let _ = std::fs::create_dir_all(&config.saved_dir);
+    annotate::warm_up();
 
     let app = Box::into_raw(Box::new(App {
         config,
@@ -161,6 +168,47 @@ fn main() {
         }
         drop(Box::from_raw(app));
     }
+}
+
+/// One line per capture in `eqs-timing.log`, the newest 50 kept. Written after the overlay
+/// has closed, so measuring never slows the thing it measures.
+fn log_timing(
+    queued_ms: u32,
+    pressed: std::time::Instant,
+    grabbed: std::time::Instant,
+    frame: Option<(std::time::Instant, std::time::Instant)>,
+    shot: &capture::Screenshot,
+) {
+    let ms = |a: std::time::Instant, b: std::time::Instant| b.saturating_duration_since(a).as_millis();
+    let (window, first) = match frame {
+        Some((shown, painted)) => (ms(grabbed, shown), ms(shown, painted)),
+        None => (0, 0),
+    };
+    let total = frame.map(|(_, painted)| ms(pressed, painted)).unwrap_or(0) + queued_ms as u128;
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let line = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}  queued {:>4}ms  grab {:>4}ms  window {:>4}ms  first-frame {:>4}ms  total {:>4}ms  ({}x{})",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond,
+        queued_ms, ms(pressed, grabbed), window, first, total, shot.width, shot.height,
+    );
+    let path = config::exe_dir().join("eqs-timing.log");
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<&str> = old.lines().collect();
+    lines.push(&line);
+    let keep = &lines[lines.len().saturating_sub(50)..];
+    let _ = std::fs::write(&path, keep.join("\n") + "\n");
+}
+
+/// The exe is built for the Windows subsystem, so it has no console of its own. Borrow
+/// the parent's when there is one, which is the case when it is run from a terminal.
+fn print_to_console(text: &str) {
+    use std::io::Write;
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+    let _ = std::io::stdout().write_all(text.as_bytes());
+    let _ = std::io::stdout().flush();
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
@@ -225,6 +273,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         WM_HOTKEY => {
             let id = wparam.0 as i32;
+            // How long the press sat in the queue before this thread picked it up. Large
+            // numbers mean the app itself was slow to wake, not the capture.
+            let queued_ms = GetTickCount().wrapping_sub(GetMessageTime() as u32);
             if id == HOTKEY_FOLDER {
                 // Not a capture — just reveal the current save folder. Reads the live
                 // config, so it always opens wherever shots_dir points right now.
@@ -234,7 +285,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
             {
-                run_capture(app, hwnd, id);
+                run_capture(app, hwnd, id, queued_ms);
                 IN_CAPTURE.store(false, Ordering::SeqCst);
             }
             LRESULT(0)
@@ -277,7 +328,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
+fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32, queued_ms: u32) {
+    let pressed = std::time::Instant::now();
     let shot = match capture::capture_virtual_screen() {
         Ok(s) => s,
         Err(e) => {
@@ -292,7 +344,12 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32) {
     } else {
         overlay::Start::Drag
     };
-    let Some(sel) = overlay::select_region(&shot, app.config.crosshair_style, true, start) else {
+    let grabbed = std::time::Instant::now();
+    let selection = overlay::select_region(&shot, app.config.crosshair_style, true, start);
+    if app.config.timing_log {
+        log_timing(queued_ms, pressed, grabbed, overlay::take_first_frame(), &shot);
+    }
+    let Some(sel) = selection else {
         return; // cancelled
     };
     let (x, y, w, h) = sel.rect;

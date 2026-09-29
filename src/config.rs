@@ -60,6 +60,7 @@ pub struct RawConfig {
     pub temp_file: String,
     pub copy_to_clipboard: bool,
     pub crosshair_style: String,
+    pub timing_log: bool,
 }
 
 impl Default for RawConfig {
@@ -75,6 +76,7 @@ impl Default for RawConfig {
             temp_file: "temp.png".into(),
             copy_to_clipboard: true,
             crosshair_style: "lines".into(),
+            timing_log: false,
         }
     }
 }
@@ -110,6 +112,8 @@ pub struct Config {
     pub saved_dir: PathBuf,
     pub copy_to_clipboard: bool,
     pub crosshair_style: CrosshairStyle,
+    /// Append how long each capture took to reach its first frame to `eqs-timing.log`.
+    pub timing_log: bool,
     pub config_path: PathBuf,
 }
 
@@ -180,6 +184,7 @@ pub fn load(cli_override: Option<&str>) -> Result<Config, String> {
             "cursor" => CrosshairStyle::Cursor,
             other => return Err(format!("invalid crosshair_style: \"{}\" (use \"lines\" or \"cursor\")", other)),
         },
+        timing_log: raw.timing_log,
         config_path,
     })
 }

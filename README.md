@@ -66,12 +66,12 @@ it, or don't, then press the letter you started with.
 |---|---|
 | `?` on the bar, or `F1` | the whole key list, as a panel. Click anywhere to dismiss it |
 | `R` `A` `L` `C` `P` | rectangle · arrow · line · circle · pen |
-| `F` | fill — the next rectangle or circle is **solid** in the current colour. Pick black, drag over a password, and it is gone. Off again each capture |
+| `F` | fill — the rectangle or circle you **just drew** turns solid, and so does the next one. Pick black, drag over a password, press `F`, gone. Off again each capture |
 | `T` | text — click where it goes and type. `Enter` starts a new line; `Ctrl+Enter`, or a click anywhere else, places it |
 | double-click text | reopen placed text and edit it — it goes back in the same spot, same order |
 | while typing | `←` `→` `↑` `↓` `Home` `End` move the caret · `Del` deletes forward · `Ctrl+A` select all · `Ctrl+C` / `Ctrl+X` / `Ctrl+V` copy, cut, paste · `Esc` throws the text away |
-| `1`–`8` | colour — **red is the default**, and whatever you pick is still there next capture |
-| mouse wheel | stroke width / text size — also remembered |
+| `1`–`8` | colour — recolours the shape you just drew and everything after it. **Red is the default**, and whatever you pick is still there next capture |
+| mouse wheel | stroke width / text size — same: the shape you just drew, and the next ones. Also remembered |
 | hold `Shift` | perfect square / circle, or snap a line to 45° |
 | drag a border | move a shape by its outline, or move the whole region by its edge |
 | drag a corner | resize it — the opposite corner stays put. Works on shapes and on the capture region |
@@ -191,6 +191,16 @@ crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden
 - **Hotkey already taken?** You get one warning at startup naming the conflicting binding — rebind and hit *Reload config*.
 - **What it won't capture:** UAC prompts and the lock screen (Windows forbids it), and some exclusive-fullscreen games. Windowed/borderless games are fine.
 - If a capture fails you get a message box; if you see nothing, it worked. Silence is the feature.
+
+**Changes land on the shape you just drew** — as long as you have not switched tools since.
+Draw a rectangle, press `F`, and that rectangle fills. Switch to the arrow first and pick blue,
+and only the next arrow is blue; the rectangle stays as it was. Rolling the wheel through
+five sizes is one `Ctrl+Z` back to where you started, not five.
+
+**Slow to start?** Set `timing_log = true` in `config.toml` and every capture adds a line to
+`eqs-timing.log` next to the exe: how long the press waited, the screen grab, the window, and
+the first frame. It is written after the overlay closes, so measuring costs the capture nothing.
+`eqs.exe --time-startup` runs the same measurement without a hotkey.
 
 If the tray icon ever disappears on its own, look for **`eqs-panic.log`** next to `eqs.exe`.
 A crash writes the reason and the exact line there before the process dies.
