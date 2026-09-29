@@ -20,8 +20,12 @@ async function loadConfig() {
   state.cfg = await invoke("load_config");
   const c = state.cfg;
   setHotkey("quick_hotkey", c.quick_hotkey);
-  setHotkey("save_hotkey", c.save_hotkey);
+  setHotkey("record_hotkey", c.record_hotkey);
   setHotkey("folder_hotkey", c.folder_hotkey);
+  setHotkey("videos_folder_hotkey", c.videos_folder_hotkey);
+  document.getElementById("record_system_sound").checked = c.record_system_sound;
+  document.getElementById("videos_dir").value = c.videos_dir;
+  setFps(String(c.record_fps));
   setHotkey("window_hotkey", c.window_hotkey);
   document.getElementById("window_pick").checked = c.window_pick;
   document.getElementById("shots_dir").value = c.shots_dir;
@@ -43,6 +47,16 @@ function setSegmented(val) {
 
 document.querySelectorAll("#crosshair_style button").forEach((b) => {
   b.addEventListener("click", () => setSegmented(b.dataset.val));
+});
+
+// A rate other than 30 or 60 set by hand in config.toml lights neither button and is kept.
+function setFps(val) {
+  document.querySelectorAll("#record_fps button").forEach((b) =>
+    b.classList.toggle("is-active", b.dataset.val === val)
+  );
+}
+document.querySelectorAll("#record_fps button").forEach((b) => {
+  b.addEventListener("click", () => setFps(b.dataset.val));
 });
 
 document.getElementById("browse").addEventListener("click", async () => {
@@ -113,8 +127,13 @@ document.getElementById("save").addEventListener("click", async () => {
   const status = document.getElementById("status");
   const c = state.cfg;
   c.quick_hotkey = document.querySelector('.hotkey[data-hotkey="quick_hotkey"]').textContent.trim();
-  c.save_hotkey = document.querySelector('.hotkey[data-hotkey="save_hotkey"]').textContent.trim();
+  c.record_hotkey = document.querySelector('.hotkey[data-hotkey="record_hotkey"]').textContent.trim();
   c.folder_hotkey = document.querySelector('.hotkey[data-hotkey="folder_hotkey"]').textContent.trim();
+  c.videos_folder_hotkey = document.querySelector('.hotkey[data-hotkey="videos_folder_hotkey"]').textContent.trim();
+  c.record_system_sound = document.getElementById("record_system_sound").checked;
+  c.videos_dir = document.getElementById("videos_dir").value;
+  const fps = document.querySelector("#record_fps .is-active");
+  if (fps) c.record_fps = Number(fps.dataset.val);
   c.window_hotkey = document.querySelector('.hotkey[data-hotkey="window_hotkey"]').textContent.trim();
   c.window_pick = document.getElementById("window_pick").checked;
   c.shots_dir = document.getElementById("shots_dir").value;

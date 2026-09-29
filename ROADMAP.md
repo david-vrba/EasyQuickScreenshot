@@ -33,11 +33,13 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 - **winget** package (Scoop is live; the winget PR needs re-filing)
 - Annotate: clicking into text to place the caret, and a text size control of its own
 
-## Next version jump — screen recording
-A different capture path, not a variation on this one: encoding, a frame loop, a stop
-control, audio or no audio, and a file format that is not PNG. It gets its own version
-rather than being folded into a release that is about screenshots.
-Nothing is designed yet — this is the marker that it is the next big thing, not a plan.
+## Screen recording — shipped in v0.11.0, what comes after
+- **Shipped:** `Ctrl+Alt+E` region recording from the GPU (DXGI Desktop Duplication), H.264 +
+  AAC through Media Foundation, system sound, a REC bar and region frame that never reach the
+  video, and an editor with trim, crop, mute and volume. `Q` / `E` save it like a screenshot.
+- **Next, in order of how often it would help:** microphone as a second switch (mixed in, or
+  its own track); a region that spans two monitors; pause and resume; GIF export for short
+  clips; the window picker (focus mode) as a way to choose what to record.
 
 ## Considered (not committed — feedback wanted)
 - A full editor window: re-crop saved shots, resize handles, blur redaction
@@ -46,6 +48,8 @@ Nothing is designed yet — this is the marker that it is the next big thing, no
 - Single-instance guard for the settings window
 
 ## Known limitations
+- A recording covers one monitor: a region crossing two is trimmed to the one its centre is on.
+  Rotated (portrait) monitors cannot be recorded yet
 - Can't capture UAC prompts or the lock screen (Windows forbids it) or some
   exclusive-fullscreen games — windowed/borderless games are fine
 - On AltGr layouts (Czech, German, …) `Ctrl+Alt` = AltGr, so `ctrl+alt`-based hotkeys

@@ -13,7 +13,9 @@ They coordinate through the filesystem plus one Win32 message: the tray menu spa
 
 ## What this program is (the core, `eqs.exe`)
 
-A single resident Win32 process. One hidden window owns a tray icon and four global hotkeys: three run a synchronous capture flow (quick / save / focus mode), the fourth just opens the current save folder in Explorer (no capture). Every capture ends in the annotate phase, where the letter that opened it commits it — `Ctrl+Alt+Q` … `Q`, `Ctrl+Alt+E` … `E`. A capture press runs one synchronous flow and returns to the message loop. There are no threads, no async, no state between captures.
+A single resident Win32 process. One hidden window owns a tray icon and five global hotkeys: screenshot and focus mode run a synchronous capture flow that ends in the annotate phase (`Q` saves the temp file, `E` keeps a copy); record starts or stops a screen recording; the other two open the screenshots and videos folders. A screenshot press runs one synchronous flow and returns to the message loop — no threads, no state between captures.
+
+**Recording is the one exception**, because it outlives the hotkey press: `recorder.rs` runs capture + encode on a worker thread and system sound on a second, both stopped through one shared flag. The screenshot path does not touch either thread. The REC bar and region frame are ordinary windows on the main thread, excluded from capture with `WDA_EXCLUDEFROMCAPTURE`; the screenshot overlay carries the same flag, so a screenshot taken mid-recording never lands in the video.
 
 ```
 hotkey pressed
@@ -40,6 +42,12 @@ guides, mouse cursor hidden via `WM_SETCURSOR`) or `"cursor"` (class cross curso
 | `src/overlay.rs` | Selection UI: window class, nested message loop, GDI double-buffered painting, mouse/keyboard handling; also the second (annotate) phase and flattening the drawing into the exported crop |
 | `src/annotate.rs` | Quick-annotate: shape model (rect/arrow/line/circle/pen/text), move + resize hit-testing, solid fill, the multi-line text editor with its caret, snapshot undo history, GDI+ anti-aliased rendering, the floating toolbar + its hit-testing and shortcuts |
 | `src/window_pick.rs` | Focus mode: every on-screen window's rectangle, collected before the overlay exists (after that it covers everything), hit-tested by point, plus the easing and repaint-area maths for the pane that slides between them |
+| `src/recorder.rs` | A recording: the worker thread's frame loop (wait for the next frame slot, copy the region, draw the cursor, encode), audio placed on the same clock, and `start` / `stop` for the tray window |
+| `src/screen_frames.rs` | DXGI Desktop Duplication for one monitor: the region copied GPU-side into a staging texture, re-duplicated after a mode change or secure desktop instead of ending the recording |
+| `src/system_audio.rs` | WASAPI loopback of the default output at 48 kHz stereo, and the `Timeline` that fills quiet stretches with silence so sound never drifts ahead of the picture |
+| `src/mp4_writer.rs` | Media Foundation sink writer: top-down BGRA in, H.264 + AAC MP4 out, hardware encoders when present |
+| `src/video_export.rs` | `eqs --export-video`: the source reader decodes, trim / crop / volume are applied to raw frames and samples, the MP4 writer encodes again. No edits means a plain copy |
+| `src/rec_bar.rs` | The REC bar (dot, clock, stop square) and the red region frame, both excluded from capture |
 | `src/save.rs` | PNG encode (`png` crate, fast compression), atomic writes, timestamped filenames |
 | `src/clipboard.rs` | CF_DIB clipboard writer with retry (clipboard can be locked by other apps); CF_UNICODETEXT read/write for the annotate text tool |
 | `src/tray.rs` | Tray icon add/remove (brand icon embedded via `include_bytes!`), right-click menu |
@@ -55,6 +63,8 @@ Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no 
 | File | Owns |
 |---|---|
 | `src/main.rs` | Tauri builder + command handlers (`load_config`, `save_config`, `gallery_stats`, `gallery_list`, `pick_shots_folder`, `open_path`/`reveal_path`/`open_url`) |
+| `src/video_editor.rs` | The video editor's back end: the recording passed by `--edit-video`, and saving it by running `eqs --export-video` — the settings app holds no media code of its own |
+| `ui/editor.js` | The video editor itself: timeline with trim handles, crop box, mute and volume, `Q` / `E` / `Esc`. Shown instead of the settings tabs when the window opens with `--edit-video` |
 | `src/config_io.rs` | Reads/writes the shared `config.toml` via `toml_edit` (comments survive); mirrors the core's config discovery + hotkey grammar so it never saves something the core can't register |
 | `src/gallery.rs` | Lists `saved/`, builds base64 PNG thumbnails (`image` crate) — self-contained, no asset-protocol scope needed |
 | `src/tray_signal.rs` | `FindWindow("EQS_MAIN")` + `PostMessage(WM_APP+2)` to hot-reload the running core after a save |
@@ -91,7 +101,9 @@ Separate crate, separate `target/`, own build. Vanilla HTML/CSS/JS frontend (no 
 - `eqs.exe --render-test SX SY W H lines|cursor out.png [annotate|export]` — composes one real overlay frame over a live capture with no window, so the drawing code is verifiable pixel-for-pixel from a screenshot diff. Same exit-code scheme. Adding `annotate` renders the annotate phase instead: one of every tool plus the toolbar and the `?` panel, which covers the whole GDI+ path in a single frame. Adding `export` renders what that same frame *saves*, so a diff of the two proves the chrome never reaches the file. Adding `pick` renders focus mode instead, with the pane over whichever real window is at `SX SY`.
 - `cargo test` — unit tests for the annotate geometry and toolbar layout (Shift constraints, jitter filter, degenerate-click discard, keeping the bar on the captured monitor, click hit-testing) and for config parsing (the default the app writes on first run, and `config.example.toml`, both of which must satisfy `deny_unknown_fields`). No window or desktop needed, so CI runs them. `cargo test --manifest-path settings-app/Cargo.toml` covers the settings app's comment-preserving config write.
 - `eqs.exe --config path.toml` — run against a throwaway config (isolated shots dir, clipboard off).
-- Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` for save mode) against a running instance started with a throwaway `--config` — it injects the hotkey, a drag, then the same letter again to commit, and the output file should appear. It moves the real mouse briefly.
+- `eqs.exe --record-test X Y W H SECONDS out.mp4` — a headless recording with system sound and no on-screen controls, for `ffprobe`.
+- `eqs.exe --export-video IN quick|keep START END CROP VOLUME [--config …]` — the editor's save, runnable on its own; prints where the file landed.
+- Full e2e: `pwsh scripts/e2e-test.ps1` (or `-Key E` to keep a copy) against a running instance started with a throwaway `--config` — it injects the hotkey, a drag, then the same letter again to commit, and the output file should appear. It moves the real mouse briefly.
 
 ## Build
 

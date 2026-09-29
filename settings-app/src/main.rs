@@ -7,9 +7,11 @@
 mod config_io;
 mod gallery;
 mod tray_signal;
+mod video_editor;
 
 use config_io::ConfigDto;
 use gallery::{GalleryStats, ShotDto};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -72,10 +74,63 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// The recording to edit, when the tray app opened this window as the video editor.
+#[tauri::command]
+fn video_session(session: tauri::State<Option<video_editor::Session>>) -> Option<video_editor::SessionDto> {
+    session.as_ref().map(|s| video_editor::SessionDto {
+        path: s.video.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+async fn save_video(
+    session: tauri::State<'_, Option<video_editor::Session>>,
+    to: String,
+    start: f64,
+    end: f64,
+    crop: Option<[i32; 4]>,
+    volume: f64,
+) -> Result<String, String> {
+    let Some(session) = session.as_ref() else {
+        return Err("no recording is open".into());
+    };
+    let (video, eqs) = (session.video.clone(), session.eqs.clone());
+    let config = config_io::resolve_config_path();
+    // Re-encoding a long recording takes seconds; keep it off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = video_editor::Session { video, eqs };
+        video_editor::save(&session, &config, &to, start, end, crop, volume)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn close_editor(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn main() {
+    let session = video_editor::from_args();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let session = app.state::<Option<video_editor::Session>>();
+            if let Some(session) = session.as_ref() {
+                // The webview may read exactly this one file and nothing else on disk.
+                let _ = app.asset_protocol_scope().allow_file(&session.video);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title("Edit recording — EasyQuickScreenshot");
+                    let _ = window.set_size(tauri::LogicalSize::new(1180.0, 820.0));
+                    let _ = window.center();
+                    // Q and E only work once the window has the keyboard.
+                    let _ = window.set_focus();
+                }
+            }
+            Ok(())
+        })
+        .manage(session)
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
@@ -85,6 +140,9 @@ fn main() {
             open_path,
             reveal_path,
             open_url,
+            video_session,
+            save_video,
+            close_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EasyQuickScreenshot Settings");

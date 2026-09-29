@@ -7,7 +7,7 @@ EasyQuickScreenshot is a local, single-user Windows utility. By design:
 - **No network.** It never connects to the internet, sends telemetry, or phones home.
 - **No accounts, no cloud.** Everything stays on your machine.
 - **Your screenshots stay local.** They are written only to the folder you configure. The
-  repository's `.gitignore` blocks `shots/` and all image files so captures can never be
+  repository's `.gitignore` blocks `shots/`, `videos/`, and all image and video files so captures can never be
   committed by accident.
 - **No secrets.** The app stores no credentials or tokens; `config.toml` holds only hotkeys and
   folder paths.

@@ -8,8 +8,14 @@ mod capture;
 mod clipboard;
 mod config;
 mod overlay;
+mod rec_bar;
+mod mp4_writer;
+mod recorder;
 mod save;
+mod screen_frames;
+mod system_audio;
 mod tray;
+mod video_export;
 mod window_pick;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,9 +41,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::Config;
 
 const HOTKEY_QUICK: i32 = 1;
-const HOTKEY_SAVE: i32 = 2;
+const HOTKEY_RECORD: i32 = 2;
 const HOTKEY_FOLDER: i32 = 3;
 const HOTKEY_WINDOW: i32 = 4;
+const HOTKEY_VIDEOS: i32 = 5;
 
 /// Blocks re-entrant captures if a hotkey fires while the overlay is already open.
 static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
@@ -45,6 +52,8 @@ static IN_CAPTURE: AtomicBool = AtomicBool::new(false);
 struct App {
     config: Config,
     config_override: Option<String>,
+    /// The recording in progress and the controls shown for it.
+    recording: Option<(recorder::Recording, rec_bar::RecBar)>,
 }
 
 /// A panic cannot unwind out of a window procedure, so Rust aborts and the tray icon
@@ -91,6 +100,18 @@ fn main() {
     // Headless test hook: eqs --render-test SX SY W H (lines|cursor) out.png
     // Composes one real overlay frame (guides + selection border) with no window/message
     // pump, so the drawing code can be verified pixel-for-pixel from a screenshot diff.
+    // The video editor's save: eqs --export-video IN quick|keep START END CROP VOLUME.
+    // CROP is "x,y,w,h" in video pixels or "-". Prints where the file landed.
+    if let Some(i) = args.iter().position(|a| a == "--export-video") {
+        std::process::exit(export_video(&args[i + 1..], config_override.as_deref()));
+    }
+
+    // Headless test hook: eqs --record-test X Y W H SECONDS out.mp4 (virtual-screen
+    // coordinates). Records with system sound and no on-screen controls, for ffprobe.
+    if let Some(i) = args.iter().position(|a| a == "--record-test") {
+        std::process::exit(headless_record(&args[i + 1..]));
+    }
+
     if args.iter().any(|a| a == "--time-startup") {
         print_to_console(&overlay::startup_timing(5));
         return;
@@ -122,6 +143,7 @@ fn main() {
     let app = Box::into_raw(Box::new(App {
         config,
         config_override,
+        recording: None,
     }));
 
     unsafe {
@@ -155,8 +177,8 @@ fn main() {
         tray::add_icon(
             hwnd,
             &format!(
-                "EasyQuickScreenshot — {} capture / {} window / then Q or E to save",
-                cfg.quick_hotkey_label, cfg.window_hotkey_label
+                "EasyQuickScreenshot — {} capture · {} window · {} record",
+                cfg.quick_hotkey_label, cfg.window_hotkey_label, cfg.record_hotkey_label
             ),
         );
         register_hotkeys(hwnd, cfg);
@@ -199,6 +221,97 @@ fn log_timing(
     let _ = std::fs::write(&path, keep.join("\n") + "\n");
 }
 
+fn export_video(rest: &[String], config_override: Option<&str>) -> i32 {
+    let Some(edits) = parse_edits(rest) else {
+        return 2;
+    };
+    let Ok(config) = config::load(config_override) else {
+        return 2;
+    };
+    let input = std::path::PathBuf::from(&rest[0]);
+    let destination = match rest[1].as_str() {
+        "quick" => config.videos_dir.join("temp.mp4"),
+        "keep" => save::timestamped(&config.videos_dir.join("saved"), "mp4"),
+        _ => return 2,
+    };
+    if let Some(dir) = destination.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Written beside the destination, then renamed over it: whoever is watching temp.mp4
+    // never sees half a file. The sink writer picks the container from the extension, so
+    // the part file still has to end in .mp4.
+    let part = destination.with_extension("part.mp4");
+    if let Err(e) = video_export::export(&input, &part, edits) {
+        print_to_console(&format!("could not save the video: {e}\n"));
+        return 4;
+    }
+    if let Err(e) = std::fs::rename(&part, &destination) {
+        print_to_console(&format!("could not move the video into place: {e}\n"));
+        return 5;
+    }
+    if config.copy_to_clipboard {
+        let _ = clipboard::copy_file(&destination);
+    }
+    print_to_console(&format!("{}\n", destination.display()));
+    0
+}
+
+/// START END CROP VOLUME, after the input path and the destination word.
+fn parse_edits(rest: &[String]) -> Option<video_export::Edits> {
+    let num = |i: usize| rest.get(i).and_then(|s| s.parse::<f64>().ok());
+    let crop = match rest.get(4).map(String::as_str) {
+        Some("-") => None,
+        Some(spec) => {
+            let v: Vec<i32> = spec.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            if v.len() != 4 {
+                return None;
+            }
+            Some((v[0], v[1], v[2], v[3]))
+        }
+        None => return None,
+    };
+    Some(video_export::Edits {
+        start: num(2)?,
+        end: num(3)?,
+        crop,
+        volume: num(5)?.clamp(0.0, 2.0) as f32,
+    })
+}
+
+fn headless_record(rest: &[String]) -> i32 {
+    let int = |s: &String| s.parse::<i32>().ok();
+    let (Some(x), Some(y), Some(w), Some(h)) = (int(&rest[0]), int(&rest[1]), int(&rest[2]), int(&rest[3]))
+    else {
+        return 2;
+    };
+    let (Some(seconds), Some(out)) = (rest.get(4).and_then(|s| s.parse::<f64>().ok()), rest.get(5)) else {
+        return 2;
+    };
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    let settings = recorder::Settings { fps: 30, system_sound: true };
+    let recording = match recorder::start((x, y, w, h), out.into(), settings) {
+        Ok(r) => r,
+        Err(e) => {
+            print_to_console(&format!("could not start: {e}\n"));
+            return 3;
+        }
+    };
+    let region = recording.region;
+    std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+    match recording.stop() {
+        Ok(path) => {
+            print_to_console(&format!("recorded {:?} to {}\n", region, path.display()));
+            0
+        }
+        Err(e) => {
+            print_to_console(&format!("could not finish: {e}\n"));
+            5
+        }
+    }
+}
+
 /// The exe is built for the Windows subsystem, so it has no console of its own. Borrow
 /// the parent's when there is one, which is the case when it is run from a terminal.
 fn print_to_console(text: &str) {
@@ -223,8 +336,20 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
     {
         failed.push(cfg.quick_hotkey_label.clone());
     }
-    if RegisterHotKey(hwnd, HOTKEY_SAVE, cfg.save_hotkey.modifiers, cfg.save_hotkey.vk).is_err() {
-        failed.push(cfg.save_hotkey_label.clone());
+    if RegisterHotKey(hwnd, HOTKEY_RECORD, cfg.record_hotkey.modifiers, cfg.record_hotkey.vk)
+        .is_err()
+    {
+        failed.push(cfg.record_hotkey_label.clone());
+    }
+    if RegisterHotKey(
+        hwnd,
+        HOTKEY_VIDEOS,
+        cfg.videos_folder_hotkey.modifiers,
+        cfg.videos_folder_hotkey.vk,
+    )
+    .is_err()
+    {
+        failed.push(cfg.videos_folder_hotkey_label.clone());
     }
     if RegisterHotKey(hwnd, HOTKEY_FOLDER, cfg.folder_hotkey.modifiers, cfg.folder_hotkey.vk)
         .is_err()
@@ -258,7 +383,8 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
 
 unsafe fn unregister_hotkeys(hwnd: HWND) {
     let _ = UnregisterHotKey(hwnd, HOTKEY_QUICK);
-    let _ = UnregisterHotKey(hwnd, HOTKEY_SAVE);
+    let _ = UnregisterHotKey(hwnd, HOTKEY_RECORD);
+    let _ = UnregisterHotKey(hwnd, HOTKEY_VIDEOS);
     let _ = UnregisterHotKey(hwnd, HOTKEY_FOLDER);
     let _ = UnregisterHotKey(hwnd, HOTKEY_WINDOW);
 }
@@ -280,7 +406,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 // Not a capture — just reveal the current save folder. Reads the live
                 // config, so it always opens wherever shots_dir points right now.
                 open_in_explorer(&app.config.saved_dir);
-            } else if (id == HOTKEY_QUICK || id == HOTKEY_SAVE || id == HOTKEY_WINDOW)
+            } else if id == HOTKEY_VIDEOS {
+                open_in_explorer(&app.config.videos_dir);
+            } else if id == HOTKEY_RECORD {
+                toggle_recording(app, hwnd);
+            } else if (id == HOTKEY_QUICK || id == HOTKEY_WINDOW)
                 && IN_CAPTURE
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
@@ -296,6 +426,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 match tray::show_menu(hwnd) {
                     tray::CMD_SETTINGS => launch_settings(app),
                     tray::CMD_OPEN_SHOTS => open_in_explorer(&app.config.shots_dir),
+                    tray::CMD_OPEN_VIDEOS => open_in_explorer(&app.config.videos_dir),
                     tray::CMD_OPEN_CONFIG => {
                         if !app.config.config_path.exists() {
                             let _ = std::fs::write(&app.config.config_path, config::DEFAULT_CONFIG);
@@ -313,12 +444,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        rec_bar::WM_EQS_STOP_RECORDING => {
+            stop_recording(app);
+            LRESULT(0)
+        }
         tray::WM_EQS_RELOAD => {
             // The settings app saved config.toml — apply it live.
             reload_config(app, hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
+            // Quitting mid-recording still finishes the file; an unfinished MP4 has no
+            // index and plays nowhere.
+            if let Some((recording, bar)) = app.recording.take() {
+                bar.close();
+                let _ = recording.stop();
+            }
             unregister_hotkeys(hwnd);
             tray::remove_icon(hwnd);
             PostQuitMessage(0);
@@ -376,6 +517,89 @@ fn run_capture(app: &App, hwnd: HWND, hotkey_id: i32, queued_ms: u32) {
     if app.config.copy_to_clipboard {
         // Clipboard is best-effort: the file already landed, so stay silent on failure.
         let _ = clipboard::copy_bgra(hwnd, &bgra, cw, ch);
+    }
+}
+
+/// `Ctrl+Alt+E`: start a recording, or stop the one running.
+fn toggle_recording(app: &mut App, hwnd: HWND) {
+    if app.recording.is_some() {
+        stop_recording(app);
+        return;
+    }
+    if IN_CAPTURE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    start_recording(app, hwnd);
+    IN_CAPTURE.store(false, Ordering::SeqCst);
+}
+
+/// The same crosshair drag as a screenshot picks the region; then recording starts.
+fn start_recording(app: &mut App, hwnd: HWND) {
+    let shot = match capture::capture_virtual_screen() {
+        Ok(s) => s,
+        Err(e) => {
+            message_box(&format!("Capture failed: {}", e), MB_ICONERROR);
+            return;
+        }
+    };
+    let selection = overlay::select_region(&shot, app.config.crosshair_style, false, overlay::Start::Drag);
+    let Some(sel) = selection else {
+        return; // cancelled
+    };
+    let (x, y, w, h) = sel.rect;
+    let region = (x + shot.origin_x, y + shot.origin_y, w, h);
+    drop(shot); // 37 MB that the recording has no use for
+    let settings = recorder::Settings {
+        fps: app.config.record_fps,
+        system_sound: app.config.record_system_sound,
+    };
+    let path = app.config.videos_dir.join("recording.mp4");
+    match recorder::start(region, path, settings) {
+        Ok(recording) => {
+            let bar = rec_bar::show(recording.region, hwnd);
+            app.recording = Some((recording, bar));
+        }
+        Err(e) => message_box(&format!("Could not start recording:\n{}", e), MB_ICONERROR),
+    }
+}
+
+fn stop_recording(app: &mut App) {
+    let Some((recording, bar)) = app.recording.take() else { return };
+    bar.close();
+    match recording.stop() {
+        Ok(raw) => open_video_editor(app, &raw),
+        Err(e) => message_box(&format!("The recording could not be finished:\n{}", e), MB_ICONERROR),
+    }
+}
+
+/// Hand the finished recording to the editor in the settings app, where Q and E save it.
+/// Without the settings app there is no editor, so the recording simply becomes the quick
+/// video, like a screenshot saved with Q.
+fn open_video_editor(app: &App, raw: &std::path::Path) {
+    let editor = config::exe_dir().join("eqs-settings.exe");
+    if editor.exists() {
+        // Windows only lets a new window take focus if whoever launches it just had input.
+        // This process did — the hotkey or the stop button — so it passes that right on.
+        // Without it the editor opens behind the app you were recording and Q does nothing.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                windows::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+            );
+        }
+        let this = std::env::current_exe().unwrap_or_default();
+        let _ = std::process::Command::new(editor)
+            .arg("--edit-video")
+            .arg(raw)
+            .arg("--eqs")
+            .arg(this)
+            .arg("--config")
+            .arg(&app.config.config_path)
+            .spawn();
+    } else {
+        let _ = std::fs::rename(raw, app.config.videos_dir.join("temp.mp4"));
     }
 }
 

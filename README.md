@@ -20,19 +20,42 @@ EasyQuickScreenshot does one thing: **get the pixels you're pointing at into a f
 
 | Hotkey | Mode | What happens |
 |---|---|---|
-| `Ctrl+Alt+Q` | **Quick shot** | Drag a region, the editor opens, press `Q` again. Saved to one fixed file, `shots/temp.png`, which the next quick shot **overwrites**. One file, forever — zero folder bloat. |
-| `Ctrl+Alt+E` | **Easy save** | The same, but press `E` and it keeps a timestamped PNG in `shots/saved/`. |
+| `Ctrl+Alt+Q` | **Screenshot** | Drag a region and the editor opens. `Q` saves to one fixed file, `shots/temp.png`, which the next one **overwrites** — zero folder bloat. `E` keeps a timestamped PNG in `shots/saved/` instead. |
 | `Ctrl+Shift+Alt+Q` | **Focus mode** | No dragging at all. Point at a window, it lights up, click it — the whole window goes to the editor. |
+| `Ctrl+Alt+E` | **Record** | Drag a region and recording starts. Press it again to stop, then trim, crop and set the volume. `Q` saves `videos/temp.mp4`, `E` keeps a timestamped copy. |
 
-**The letter that opens a capture is the letter that finishes it.** `Ctrl+Alt+Q` … `Q`.
-`Ctrl+Alt+E` … `E`. `Enter` and `Shift+Enter` do the same two things if your hand is already
-there. While you are typing a caption, `Q` and `E` are just letters — nothing is saved.
+**`Q` saves the quick file, `E` keeps a copy** — for screenshots and recordings alike. `Enter`
+and `Shift+Enter` do the same two things. While you are typing a caption, `Q` and `E` are just
+letters — nothing is saved.
 
 Every capture also goes to the clipboard (configurable), so `Ctrl+V` works immediately.
 
 **Q**uick and **E**asy — that's the name.
 
-There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folder** in Explorer — no capture. It always opens wherever your save folder currently points, so it stays correct even after you change the folder in settings.
+There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folder** in Explorer — no capture — and `Ctrl+Shift+Alt+V`, which opens the videos folder. Both always open wherever the folder currently points, so they stay correct after you change it in settings.
+
+## Screen recording — `Ctrl+Alt+E`
+
+1. Drag a region, exactly like a screenshot. Recording starts the moment you let go.
+2. A small bar sits next to the region — a pulsing dot, the elapsed time, and a stop square —
+   with a thin red frame around what is being recorded. **Neither appears in the video.**
+3. Press `Ctrl+Alt+E` again, or click the bar. The editor opens on the recording:
+   - **Trim** — drag the two gold handles on the timeline, or press `I` and `O` to set the start
+     and end at the playhead. Playback stops at the end of the trim, so what plays is what saves.
+   - **Crop** — drag the corners of the box over the picture; drag inside it to move it.
+   - **Sound** — mute, or a volume slider from 0 to 200%.
+   - `Q` saves `videos/temp.mp4`, `E` keeps a timestamped copy in `videos/saved/`, `Esc` throws it
+     away. The saved video is also put on the clipboard as a file, so it pastes straight into a
+     chat or a folder.
+
+It records whatever the PC is playing (turn that off in settings), at 30 fps by default. Frames
+come from the GPU through DXGI Desktop Duplication and are encoded to H.264 by the hardware
+encoder when there is one — the screenshot path reads a 1080p region in 29 ms, which cannot keep
+up with 30 fps, so recording does not use it. No edits means the file is simply moved into
+place; any edit re-encodes it.
+
+Limits for now: one monitor per recording (a region is trimmed to the monitor its centre is
+on), no microphone, no pause.
 
 ## Focus mode — capture a window without drawing a box
 
@@ -173,11 +196,15 @@ Put `eqs-settings.exe` next to `eqs.exe` and open it from the tray → *Settings
 
 ```toml
 quick_hotkey  = "ctrl+alt+q"        # modifiers: ctrl, alt, shift, win
-save_hotkey   = "ctrl+alt+e"        # keys: a-z, 0-9, f1-f24, printscreen, space
-folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
 window_pick   = true                # focus mode: pick a whole window, no dragging
-window_hotkey = "ctrl+shift+alt+q"
+window_hotkey = "ctrl+shift+alt+q"  # keys: a-z, 0-9, f1-f24, printscreen, space
+record_hotkey = "ctrl+alt+e"        # start / stop a screen recording
+record_fps    = 30                  # 10 to 60
+record_audio  = "system"            # "system" = what the PC plays, "none" = silent
+folder_hotkey = "ctrl+shift+alt+e"  # opens the save folder in Explorer (no capture)
+videos_folder_hotkey = "ctrl+shift+alt+v"
 shots_dir     = "shots"             # relative paths resolve against this file's folder
+videos_dir    = "videos"
 temp_file    = "temp.png"
 copy_to_clipboard = true
 crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden
@@ -186,7 +213,7 @@ crosshair_style = "lines"     # "lines" = full-screen guides, cursor hidden
 
 ## Good to know
 
-- **Your screenshots stay yours.** Everything is local. This repo's `.gitignore` blocks `shots/` and all image files, so captures can never be committed by accident.
+- **Your screenshots and recordings stay yours.** Everything is local. This repo's `.gitignore` blocks `shots/`, `videos/`, and every image and video format, so a capture can never be committed by accident.
 - **AltGr layouts** (Czech, Polish, German, …): Windows treats `AltGr` as `Ctrl+Alt`, so a hotkey like `ctrl+alt+e` also swallows `AltGr+E` (e.g. `€` on some layouts) while the app runs. If that bites you, rebind in `config.toml`.
 - **Hotkey already taken?** You get one warning at startup naming the conflicting binding — rebind and hit *Reload config*.
 - **What it won't capture:** UAC prompts and the lock screen (Windows forbids it), and some exclusive-fullscreen games. Windowed/borderless games are fine.

@@ -20,6 +20,55 @@
       </nav>
     </header>
 
+    <!-- VIDEO EDITOR: shown instead of everything else when opened with --edit-video -->
+    <section class="editor" id="editor">
+      <div class="stage" id="stage">
+        <video id="clip" preload="auto"></video>
+        <div class="shade" id="shade-top"></div>
+        <div class="shade" id="shade-bottom"></div>
+        <div class="shade" id="shade-left"></div>
+        <div class="shade" id="shade-right"></div>
+        <div class="crop" id="crop">
+          <span class="grip" data-corner="0"></span>
+          <span class="grip" data-corner="1"></span>
+          <span class="grip" data-corner="2"></span>
+          <span class="grip" data-corner="3"></span>
+        </div>
+      </div>
+
+      <div class="timeline">
+        <div class="track" id="track">
+          <div class="kept" id="kept"></div>
+          <div class="playhead" id="playhead"></div>
+        </div>
+        <span class="handle" id="in-handle" title="Start (I)"></span>
+        <span class="handle" id="out-handle" title="End (O)"></span>
+      </div>
+
+      <div class="controls">
+        <button class="btn" id="play" type="button">Play</button>
+        <span class="time" id="time">0:00.0 / 0:00.0</span>
+        <span class="trim-label" id="trim-label"></span>
+        <span class="spacer"></span>
+        <span class="crop-label" id="crop-label">Full frame</span>
+        <button class="btn ghost" id="crop-reset" type="button" hidden>Reset crop</button>
+        <label class="toggle">
+          <input type="checkbox" id="mute" />
+          <span class="switch"></span>
+          <span>Mute</span>
+        </label>
+        <input type="range" id="volume" min="0" max="200" step="5" value="100" />
+        <span class="volume-label" id="volume-label">100%</span>
+      </div>
+
+      <div class="editor-bar">
+        <span class="status" id="editor-status">Drag the handles to trim, the box corners to crop. I / O set start and end at the playhead.</span>
+        <button class="btn ghost" id="discard" type="button">Discard<kbd>Esc</kbd></button>
+        <button class="btn" id="save-keep" type="button">Keep a copy<kbd>E</kbd></button>
+        <button class="btn primary" id="save-quick" type="button">Save<kbd>Q</kbd></button>
+      </div>
+    </section>
+
     <main>
       <!-- SETTINGS -->
       <section class="panel is-active" data-panel="settings">
@@ -30,9 +79,36 @@
         </div>
 
         <div class="field">
-          <label>Save hotkey</label>
-          <p class="hint">Opens the same editor; press E in there to write a timestamped PNG into the saved folder.</p>
-          <button class="hotkey" data-hotkey="save_hotkey" type="button"></button>
+          <label>Record hotkey</label>
+          <p class="hint">Drag a region and recording starts. Press it again, or the stop button, to stop — then trim, crop and set the volume, and save with Q or E like a screenshot.</p>
+          <button class="hotkey" data-hotkey="record_hotkey" type="button"></button>
+        </div>
+
+        <div class="field">
+          <label>Recording frame rate</label>
+          <div class="segmented" id="record_fps">
+            <button type="button" data-val="30">30 fps</button>
+            <button type="button" data-val="60">60 fps</button>
+          </div>
+        </div>
+
+        <div class="field toggle-field">
+          <label class="toggle">
+            <input type="checkbox" id="record_system_sound" />
+            <span class="switch"></span>
+            <span>Record system sound (whatever the PC is playing)</span>
+          </label>
+        </div>
+
+        <div class="field">
+          <label>Videos folder</label>
+          <p class="hint">temp.mp4 lives here; keepers go in saved/. Relative paths resolve next to the config file.</p>
+          <input type="text" id="videos_dir" spellcheck="false" />
+        </div>
+
+        <div class="field">
+          <label>Open-videos-folder hotkey</label>
+          <button class="hotkey" data-hotkey="videos_folder_hotkey" type="button"></button>
         </div>
 
         <div class="field">
@@ -124,5 +200,6 @@
     </main>
 
     <script src="app.js"></script>
+    <script src="editor.js"></script>
   </body>
 </html>

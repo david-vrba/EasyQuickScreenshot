@@ -19,6 +19,7 @@ pub const CMD_OPEN_SHOTS: usize = 101;
 pub const CMD_OPEN_CONFIG: usize = 102;
 pub const CMD_RELOAD_CONFIG: usize = 103;
 pub const CMD_QUIT: usize = 104;
+pub const CMD_OPEN_VIDEOS: usize = 105;
 
 /// The brand icon ships inside the binary; PNG data is valid icon-resource input
 /// on Vista+ so no .ico parsing is needed. Falls back to the stock app icon.
@@ -69,6 +70,7 @@ pub fn show_menu(hwnd: HWND) -> usize {
         let _ = AppendMenuW(menu, MF_STRING, CMD_SETTINGS, w!("Settings && gallery…"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_SHOTS, w!("Open shots folder"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_VIDEOS, w!("Open videos folder"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_CONFIG, w!("Open config"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_RELOAD_CONFIG, w!("Reload config"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);

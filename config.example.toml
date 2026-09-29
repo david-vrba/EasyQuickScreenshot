@@ -4,26 +4,32 @@
 # Hotkey format: modifiers + key, e.g. "ctrl+alt+q", "shift+f9", "ctrl+shift+printscreen"
 # Modifiers: ctrl, alt, shift, win — Keys: a-z, 0-9, f1-f24, printscreen, space
 
-# Quick shot: overwrites the same temp file every time (zero folder bloat)
+# Screenshot: drag a region and the editor opens. Press Q to save over the temp file, or
+# E to keep a timestamped copy in <shots_dir>/saved/.
 quick_hotkey = "ctrl+alt+q"
-
-# Easy save: writes a timestamped file into <shots_dir>/saved/
-save_hotkey = "ctrl+alt+e"
-
-# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
-folder_hotkey = "ctrl+shift+alt+e"
 
 # Focus mode: no dragging. Point at a window, it lights up, click it and the whole window
 # goes to the editor. Set to false and the hotkey below is not registered at all.
 window_pick = true
 window_hotkey = "ctrl+shift+alt+q"
 
-# Kept so older config files still load. Drawing is no longer a separate mode — both
-# hotkeys above open the editor — so this binding is read and ignored.
-annotate_hotkey = "ctrl+shift+alt+q"
+# Screen recording: drag a region and recording starts. Press this again, or the stop
+# button, and the video editor opens — trim, crop, volume, then Q or E as for a screenshot.
+record_hotkey = "ctrl+alt+e"
+# Frames per second, 10 to 60.
+record_fps = 30
+# "system" records whatever the PC is playing; "none" records no sound.
+record_audio = "system"
+
+# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
+folder_hotkey = "ctrl+shift+alt+e"
+# Open the videos folder in Explorer
+videos_folder_hotkey = "ctrl+shift+alt+v"
 
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
+# Where recordings go: temp.mp4 here, keepers in saved/. Same rule for relative paths.
+videos_dir = "videos"
 
 # Filename of the quick-shot temp file (lives directly in shots_dir)
 temp_file = "temp.png"

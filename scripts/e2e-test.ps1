@@ -1,7 +1,9 @@
 # End-to-end test: simulates the hotkey + a rectangle drag against a RUNNING eqs.exe.
 # Moves the real mouse for ~1 second, then the output file should exist — assert on it yourself.
-# Usage: pwsh scripts/e2e-test.ps1            # quick mode (Ctrl+Alt+Q)
-#        pwsh scripts/e2e-test.ps1 -Key E     # save mode  (Ctrl+Alt+E)
+# Usage: pwsh scripts/e2e-test.ps1            # Ctrl+Alt+Q, drag, Q -> shots/temp.png
+#        pwsh scripts/e2e-test.ps1 -Key E     # Ctrl+Alt+Q, drag, E -> a timestamped copy
+# The hotkey is always Ctrl+Alt+Q: Ctrl+Alt+E starts a screen recording since 0.11.0.
+# -Key is the letter pressed in the editor afterwards.
 
 param(
     [ValidateSet("Q", "E")] [string]$Key = "Q",
@@ -26,13 +28,14 @@ public static class EqsInput {
 '@
 
 $VK_CONTROL = 0x11; $VK_MENU = 0x12
+$vkHotkey = [byte][char]'Q'
 $vkKey = [byte][char]$Key
 
 [EqsInput]::keybd_event($VK_CONTROL, 0, 0, [UIntPtr]::Zero)
 [EqsInput]::keybd_event($VK_MENU, 0, 0, [UIntPtr]::Zero)
-[EqsInput]::keybd_event($vkKey, 0, 0, [UIntPtr]::Zero)
+[EqsInput]::keybd_event($vkHotkey, 0, 0, [UIntPtr]::Zero)
 Start-Sleep -Milliseconds 80
-[EqsInput]::keybd_event($vkKey, 0, [EqsInput]::KEYUP, [UIntPtr]::Zero)
+[EqsInput]::keybd_event($vkHotkey, 0, [EqsInput]::KEYUP, [UIntPtr]::Zero)
 [EqsInput]::keybd_event($VK_MENU, 0, [EqsInput]::KEYUP, [UIntPtr]::Zero)
 [EqsInput]::keybd_event($VK_CONTROL, 0, [EqsInput]::KEYUP, [UIntPtr]::Zero)
 

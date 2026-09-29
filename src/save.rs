@@ -39,15 +39,20 @@ fn encode_png(path: &Path, bgra: &[u8], width: i32, height: i32) -> Result<(), S
 /// Timestamped path in the saved/ folder, e.g. 2026-07-03_14-05-22.png.
 /// Appends a counter if several captures land in the same second.
 pub fn timestamped_path(saved_dir: &Path) -> PathBuf {
+    timestamped(saved_dir, "png")
+}
+
+/// `<dir>/2026-09-29_18-03-11.<ext>`, with `_2`, `_3`… when that second is already taken.
+pub fn timestamped(dir: &Path, ext: &str) -> PathBuf {
     let t = unsafe { GetLocalTime() };
     let base = format!(
         "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     );
-    let mut path = saved_dir.join(format!("{}.png", base));
+    let mut path = dir.join(format!("{}.{}", base, ext));
     let mut counter = 2;
     while path.exists() {
-        path = saved_dir.join(format!("{}_{}.png", base, counter));
+        path = dir.join(format!("{}_{}.{}", base, counter, ext));
         counter += 1;
     }
     path

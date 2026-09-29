@@ -12,6 +12,12 @@ settings-app/gen
 *.jpg
 *.jpeg
 *.bmp
+# Recordings, the same rule: the videos folder and every video format, wherever it lands.
+/videos
+*.mp4
+*.webm
+*.mov
+*.mkv
 # ...but brand/UI assets are part of the source and must be committed.
 !assets/**
 !settings-app/icons/**

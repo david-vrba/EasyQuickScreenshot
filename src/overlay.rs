@@ -296,6 +296,11 @@ pub fn select_region(
 
         let result = match hwnd {
             Ok(hwnd) => {
+                // A screenshot taken while recording would otherwise land in the video.
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::WDA_EXCLUDEFROMCAPTURE,
+                );
                 let _ = ShowWindow(hwnd, SW_SHOW);
                 let _ = SetForegroundWindow(hwnd);
                 (*state).shown_at = Some(Instant::now());

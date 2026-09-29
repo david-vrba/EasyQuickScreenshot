@@ -11,26 +11,32 @@ pub const DEFAULT_CONFIG: &str = r#"# EasyQuickScreenshot config
 # Hotkey format: modifiers + key, e.g. "ctrl+alt+q", "shift+f9", "ctrl+shift+printscreen"
 # Modifiers: ctrl, alt, shift, win — Keys: a-z, 0-9, f1-f24, printscreen, space
 
-# Quick shot: overwrites the same temp file every time (zero folder bloat)
+# Screenshot: drag a region and the editor opens. Press Q to save over the temp file, or
+# E to keep a timestamped copy in <shots_dir>/saved/.
 quick_hotkey = "ctrl+alt+q"
-
-# Easy save: writes a timestamped file into <shots_dir>/saved/
-save_hotkey = "ctrl+alt+e"
-
-# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
-folder_hotkey = "ctrl+shift+alt+e"
 
 # Focus mode: no dragging. Point at a window, it lights up, click it and the whole window
 # goes to the editor. Set to false and the hotkey below is not registered at all.
 window_pick = true
 window_hotkey = "ctrl+shift+alt+q"
 
-# Kept so older config files still load. Drawing is no longer a separate mode — both
-# hotkeys above open the editor — so this binding is read and ignored.
-annotate_hotkey = "ctrl+shift+alt+q"
+# Screen recording: drag a region and recording starts. Press this again, or the stop
+# button, and the video editor opens — trim, crop, volume, then Q or E as for a screenshot.
+record_hotkey = "ctrl+alt+e"
+# Frames per second, 10 to 60.
+record_fps = 30
+# "system" records whatever the PC is playing; "none" records no sound.
+record_audio = "system"
+
+# Open the saved-screenshots folder in Explorer (opens whatever shots_dir points to now — no capture)
+folder_hotkey = "ctrl+shift+alt+e"
+# Open the videos folder in Explorer
+videos_folder_hotkey = "ctrl+shift+alt+v"
 
 # Where screenshots go. Relative paths resolve against this config file's folder.
 shots_dir = "shots"
+# Where recordings go: temp.mp4 here, keepers in saved/. Same rule for relative paths.
+videos_dir = "videos"
 
 # Filename of the quick-shot temp file (lives directly in shots_dir)
 temp_file = "temp.png"
@@ -47,11 +53,14 @@ crosshair_style = "lines"
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConfigDto {
     pub quick_hotkey: String,
-    pub save_hotkey: String,
-    pub folder_hotkey: String,
-    pub annotate_hotkey: String,
     pub window_hotkey: String,
     pub window_pick: bool,
+    pub record_hotkey: String,
+    pub record_fps: u32,
+    pub record_system_sound: bool,
+    pub folder_hotkey: String,
+    pub videos_folder_hotkey: String,
+    pub videos_dir: String,
     pub shots_dir: String,
     pub temp_file: String,
     pub copy_to_clipboard: bool,
@@ -131,9 +140,16 @@ pub fn load() -> ConfigDto {
 
     ConfigDto {
         quick_hotkey: str_field(&doc, "quick_hotkey", "ctrl+alt+q"),
-        save_hotkey: str_field(&doc, "save_hotkey", "ctrl+alt+e"),
+        record_hotkey: str_field(&doc, "record_hotkey", "ctrl+alt+e"),
+        record_fps: doc
+            .get("record_fps")
+            .and_then(|v| v.as_integer())
+            .map(|n| n.clamp(10, 60) as u32)
+            .unwrap_or(30),
+        record_system_sound: str_field(&doc, "record_audio", "system") != "none",
         folder_hotkey: str_field(&doc, "folder_hotkey", "ctrl+shift+alt+e"),
-        annotate_hotkey: str_field(&doc, "annotate_hotkey", "ctrl+shift+alt+q"),
+        videos_folder_hotkey: str_field(&doc, "videos_folder_hotkey", "ctrl+shift+alt+v"),
+        videos_dir: str_field(&doc, "videos_dir", "videos"),
         window_hotkey: str_field(&doc, "window_hotkey", "ctrl+shift+alt+q"),
         window_pick: doc
             .get("window_pick")
@@ -162,9 +178,12 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
 
     let mut doc = read_document(&config_path);
     doc["quick_hotkey"] = value(dto.quick_hotkey.trim());
-    doc["save_hotkey"] = value(dto.save_hotkey.trim());
+    doc["record_hotkey"] = value(dto.record_hotkey.trim());
+    doc["record_fps"] = value(dto.record_fps as i64);
+    doc["record_audio"] = value(if dto.record_system_sound { "system" } else { "none" });
     doc["folder_hotkey"] = value(dto.folder_hotkey.trim());
-    doc["annotate_hotkey"] = value(dto.annotate_hotkey.trim());
+    doc["videos_folder_hotkey"] = value(dto.videos_folder_hotkey.trim());
+    doc["videos_dir"] = value(dto.videos_dir.trim());
     doc["window_hotkey"] = value(dto.window_hotkey.trim());
     doc["window_pick"] = value(dto.window_pick);
     doc["shots_dir"] = value(dto.shots_dir.trim());
@@ -178,15 +197,17 @@ pub fn save(dto: &ConfigDto) -> Result<(), String> {
 // Mirror the core app's hotkey grammar so the app never fails to register what we saved.
 fn validate(dto: &ConfigDto) -> Result<(), String> {
     validate_hotkey(&dto.quick_hotkey).map_err(|e| format!("Quick-shot hotkey: {e}"))?;
-    validate_hotkey(&dto.save_hotkey).map_err(|e| format!("Save hotkey: {e}"))?;
+    validate_hotkey(&dto.record_hotkey).map_err(|e| format!("Record hotkey: {e}"))?;
     validate_hotkey(&dto.folder_hotkey).map_err(|e| format!("Open-folder hotkey: {e}"))?;
+    validate_hotkey(&dto.videos_folder_hotkey).map_err(|e| format!("Videos-folder hotkey: {e}"))?;
     validate_hotkey(&dto.window_hotkey).map_err(|e| format!("Focus-mode hotkey: {e}"))?;
-    // `annotate_hotkey` is deliberately absent: the core ignores it, so an old file that
-    // still carries it must not count as a clash with the focus-mode binding.
+    // `save_hotkey` and `annotate_hotkey` are deliberately absent: the core ignores both,
+    // so an old file that still carries them must not count as a clash.
     let keys = [
         dto.quick_hotkey.trim(),
-        dto.save_hotkey.trim(),
+        dto.record_hotkey.trim(),
         dto.folder_hotkey.trim(),
+        dto.videos_folder_hotkey.trim(),
         dto.window_hotkey.trim(),
     ];
     if (0..keys.len()).any(|i| keys[i + 1..].iter().any(|k| k.eq_ignore_ascii_case(keys[i]))) {
@@ -194,6 +215,12 @@ fn validate(dto: &ConfigDto) -> Result<(), String> {
     }
     if dto.temp_file.trim().is_empty() {
         return Err("Temp file name can't be empty.".into());
+    }
+    if dto.videos_dir.trim().is_empty() {
+        return Err("Videos folder can't be empty.".into());
+    }
+    if !(10..=60).contains(&dto.record_fps) {
+        return Err("Frame rate must be between 10 and 60.".into());
     }
     if !matches!(dto.crosshair_style.trim(), "lines" | "cursor") {
         return Err("Crosshair style must be \"lines\" or \"cursor\".".into());
@@ -245,7 +272,7 @@ mod tests {
         doc["quick_hotkey"] = value("ctrl+alt+w");
         let written = doc.to_string();
         assert!(written.contains("ctrl+alt+w"), "the new value is written");
-        assert!(written.contains("# Quick shot:"), "the comments survive");
+        assert!(written.contains("# Screenshot: drag a region"), "the comments survive");
         assert!(written.contains("#   \"cursor\""), "even the last one");
     }
 }

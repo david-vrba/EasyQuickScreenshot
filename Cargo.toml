@@ -1,6 +1,6 @@
 [package]
 name = "easy-quick-screenshot"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 description = "Instant region screenshots for Windows. Hotkey, crosshair, drag, done — no flash, no shutter, no folder bloat."
 license = "MIT"
@@ -38,6 +38,14 @@ features = [
     "Win32_System_Memory",
     "Win32_System_SystemInformation",
     "Win32_System_Console",
+    "Win32_System_Com",
+    "Win32_System_Performance",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
 ]
 
 [profile.release]

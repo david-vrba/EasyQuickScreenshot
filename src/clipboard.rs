@@ -12,6 +12,7 @@ use windows::Win32::System::Memory::{
 
 const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
+const CF_HDROP: u32 = 15;
 
 /// OpenClipboard fails while another app holds the lock; a few short retries cover it.
 unsafe fn open_with_retry(hwnd: HWND) -> bool {
@@ -25,6 +26,45 @@ unsafe fn open_with_retry(hwnd: HWND) -> bool {
 }
 
 /// Put UTF-16 text on the clipboard (a trailing NUL is added here).
+/// Put a file on the clipboard the way Explorer does, so pasting into a chat, an email or
+/// a folder attaches the file itself. Used for videos, which have no image form to paste.
+pub fn copy_file(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    // CF_HDROP is a DROPFILES header — offset of the list, a point, two flags — followed by
+    // the paths as wide strings, each NUL-terminated, the whole list ended by one more NUL.
+    const HEADER: usize = 20;
+    let list: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let bytes = HEADER + list.len() * 2;
+    unsafe {
+        let hglobal: HGLOBAL =
+            GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| format!("GlobalAlloc: {}", e))?;
+        let ptr = GlobalLock(hglobal) as *mut u8;
+        if ptr.is_null() {
+            let _ = GlobalFree(hglobal);
+            return Err("GlobalLock failed".into());
+        }
+        std::ptr::write_bytes(ptr, 0, HEADER);
+        std::ptr::copy_nonoverlapping((HEADER as u32).to_le_bytes().as_ptr(), ptr, 4); // pFiles
+        std::ptr::copy_nonoverlapping(1u32.to_le_bytes().as_ptr(), ptr.add(16), 4); // fWide
+        std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, ptr.add(HEADER), list.len() * 2);
+        let _ = GlobalUnlock(hglobal);
+
+        if !open_with_retry(HWND::default()) {
+            let _ = GlobalFree(hglobal);
+            return Err("clipboard is locked by another application".into());
+        }
+        let result = EmptyClipboard()
+            .and_then(|_| SetClipboardData(CF_HDROP, HANDLE(hglobal.0)))
+            .map(|_| ())
+            .map_err(|e| format!("SetClipboardData: {}", e));
+        let _ = CloseClipboard();
+        if result.is_err() {
+            let _ = GlobalFree(hglobal);
+        }
+        result
+    }
+}
+
 pub fn copy_text(hwnd: HWND, text: &[u16]) -> Result<(), String> {
     let bytes = (text.len() + 1) * 2;
     unsafe {
