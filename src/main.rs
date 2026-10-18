@@ -34,7 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageTime, GetMessageW,
     GetWindowLongPtrW, MessageBoxW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW,
     TranslateMessage, GWLP_USERDATA, MB_ICONERROR, MB_ICONWARNING, MB_OK, MSG, SW_SHOWNORMAL,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
     WNDCLASSW,
 };
 
@@ -104,6 +104,12 @@ fn main() {
     // CROP is "x,y,w,h" in video pixels or "-". Prints where the file landed.
     if let Some(i) = args.iter().position(|a| a == "--export-video") {
         std::process::exit(export_video(&args[i + 1..], config_override.as_deref()));
+    }
+
+    // The video editor's discard: eqs --discard-video RAW. The raw recording goes to the
+    // Recycle Bin, so a discard by mistake can still be undone.
+    if let Some(i) = args.iter().position(|a| a == "--discard-video") {
+        std::process::exit(discard_video(&args[i + 1..], config_override.as_deref()));
     }
 
     // Headless test hook: eqs --record-test X Y W H SECONDS out.mp4 (virtual-screen
@@ -226,34 +232,118 @@ fn export_video(rest: &[String], config_override: Option<&str>) -> i32 {
         return 2;
     };
     let Ok(config) = config::load(config_override) else {
+        print_to_console("could not read config.toml\n");
         return 2;
     };
     let input = std::path::PathBuf::from(&rest[0]);
-    let destination = match rest[1].as_str() {
-        "quick" => config.videos_dir.join("temp.mp4"),
-        "keep" => save::timestamped(&config.videos_dir.join("saved"), "mp4"),
+    let choices = match rest[1].as_str() {
+        "quick" => quick_video_names(&config.videos_dir),
+        "keep" => vec![save::timestamped(&config.videos_dir.join("saved"), "mp4")],
         _ => return 2,
     };
-    if let Some(dir) = destination.parent() {
+    if let Some(dir) = choices[0].parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     // Written beside the destination, then renamed over it: whoever is watching temp.mp4
     // never sees half a file. The sink writer picks the container from the extension, so
     // the part file still has to end in .mp4.
-    let part = destination.with_extension("part.mp4");
-    if let Err(e) = video_export::export(&input, &part, edits) {
-        print_to_console(&format!("could not save the video: {e}\n"));
-        return 4;
+    let part = choices[0].with_extension("part.mp4");
+    let raw = is_raw_recording(&config, &input);
+    // An untouched raw recording is moved rather than copied, or a long clip would sit on
+    // the disk twice.
+    let moved = raw
+        && video_export::untouched(&input, edits).unwrap_or(false)
+        && std::fs::rename(&input, &part).is_ok();
+    if !moved {
+        if let Err(e) = video_export::export(&input, &part, edits) {
+            let _ = std::fs::remove_file(&part);
+            print_to_console(&format!("could not save the video: {e}\n"));
+            return 4;
+        }
     }
-    if let Err(e) = std::fs::rename(&part, &destination) {
-        print_to_console(&format!("could not move the video into place: {e}\n"));
-        return 5;
+    let landed = match move_into_place(&part, &choices) {
+        Ok(path) => path,
+        Err(e) => {
+            if moved {
+                let _ = std::fs::rename(&part, &input); // the editor's recording, put back
+            } else {
+                let _ = std::fs::remove_file(&part);
+            }
+            print_to_console(&format!("could not move the video into place: {e}\n"));
+            return 5;
+        }
+    };
+    if raw && !moved {
+        // Saved, so the untrimmed original is done with. The Recycle Bin keeps it a while.
+        let _ = save::recycle(&input);
     }
     if config.copy_to_clipboard {
-        let _ = clipboard::copy_file(&destination);
+        if let Err(e) = clipboard::copy_file(&landed) {
+            // Exit 6 means saved all the same: the path, then what went wrong.
+            print_to_console(&format!("{}\nnot on the clipboard: {e}\n", landed.display()));
+            return 6;
+        }
     }
-    print_to_console(&format!("{}\n", destination.display()));
+    print_to_console(&format!("{}\n", landed.display()));
     0
+}
+
+/// Where Q may put a video: temp.mp4, or beside it when a player has temp.mp4 open — an
+/// open file cannot be replaced, and losing the new clip over it would be worse.
+fn quick_video_names(videos_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::iter::once(videos_dir.join("temp.mp4"))
+        .chain((2..=9).map(|n| videos_dir.join(format!("temp-{n}.mp4"))))
+        .collect()
+}
+
+/// Rename `part` to the first of `choices` that takes it. The first choice gets a few
+/// tries, since a virus scanner holds a freshly written file for a moment.
+fn move_into_place(
+    part: &std::path::Path,
+    choices: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let mut last = String::from("no destination");
+    for (i, choice) in choices.iter().enumerate() {
+        let tries = if i == 0 { 3 } else { 1 };
+        for _ in 0..tries {
+            match std::fs::rename(part, choice) {
+                Ok(()) => return Ok(choice.clone()),
+                Err(e) => last = format!("{}: {e}", choice.display()),
+            }
+            if tries > 1 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Recordings land in videos/raw until the editor saves or discards them. Only files there
+/// are ever moved or recycled on the editor's word.
+fn raw_dir(config: &Config) -> std::path::PathBuf {
+    config.videos_dir.join("raw")
+}
+
+fn is_raw_recording(config: &Config, path: &std::path::Path) -> bool {
+    path.parent() == Some(raw_dir(config).as_path())
+}
+
+fn discard_video(rest: &[String], config_override: Option<&str>) -> i32 {
+    let (Some(raw), Ok(config)) = (rest.first(), config::load(config_override)) else {
+        return 2;
+    };
+    let raw = std::path::Path::new(raw);
+    if !is_raw_recording(&config, raw) {
+        print_to_console("only a recording in videos/raw can be discarded\n");
+        return 2;
+    }
+    match save::recycle(raw) {
+        Ok(()) => 0,
+        Err(e) => {
+            print_to_console(&format!("could not discard the recording: {e}\n"));
+            7
+        }
+    }
 }
 
 /// START END CROP VOLUME, after the input path and the destination word.
@@ -453,13 +543,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             reload_config(app, hwnd);
             LRESULT(0)
         }
+        WM_ENDSESSION if wparam.0 != 0 => {
+            // Windows is logging off or shutting down, and may end this process right after.
+            finish_recording_quietly(app);
+            LRESULT(0)
+        }
         WM_DESTROY => {
-            // Quitting mid-recording still finishes the file; an unfinished MP4 has no
-            // index and plays nowhere.
-            if let Some((recording, bar)) = app.recording.take() {
-                bar.close();
-                let _ = recording.stop();
-            }
+            finish_recording_quietly(app);
             unregister_hotkeys(hwnd);
             tray::remove_icon(hwnd);
             PostQuitMessage(0);
@@ -556,7 +646,9 @@ fn start_recording(app: &mut App, hwnd: HWND) {
         fps: app.config.record_fps,
         system_sound: app.config.record_system_sound,
     };
-    let path = app.config.videos_dir.join("recording.mp4");
+    // A name of its own, so a second recording never overwrites one still being edited.
+    let _ = std::fs::create_dir_all(raw_dir(&app.config));
+    let path = save::timestamped(&raw_dir(&app.config), "mp4");
     match recorder::start(region, path, settings) {
         Ok(recording) => {
             let bar = rec_bar::show(recording.region, hwnd);
@@ -566,12 +658,25 @@ fn start_recording(app: &mut App, hwnd: HWND) {
     }
 }
 
+/// Quitting mid-recording still finishes the file: an unfinished MP4 has no index and plays
+/// nowhere. It stays in videos/raw for the next time the editor is wanted.
+fn finish_recording_quietly(app: &mut App) {
+    if let Some((recording, bar)) = app.recording.take() {
+        bar.close();
+        let _ = recording.stop();
+    }
+}
+
 fn stop_recording(app: &mut App) {
     let Some((recording, bar)) = app.recording.take() else { return };
     bar.close();
+    let path = recording.path.clone();
     match recording.stop() {
         Ok(raw) => open_video_editor(app, &raw),
-        Err(e) => message_box(&format!("The recording could not be finished:\n{}", e), MB_ICONERROR),
+        Err(e) => message_box(
+            &format!("The recording could not be finished:\n{e}\n\nWhat was recorded is in\n{}", path.display()),
+            MB_ICONERROR,
+        ),
     }
 }
 
@@ -590,7 +695,7 @@ fn open_video_editor(app: &App, raw: &std::path::Path) {
             );
         }
         let this = std::env::current_exe().unwrap_or_default();
-        let _ = std::process::Command::new(editor)
+        let opened = std::process::Command::new(editor)
             .arg("--edit-video")
             .arg(raw)
             .arg("--eqs")
@@ -598,8 +703,17 @@ fn open_video_editor(app: &App, raw: &std::path::Path) {
             .arg("--config")
             .arg(&app.config.config_path)
             .spawn();
-    } else {
-        let _ = std::fs::rename(raw, app.config.videos_dir.join("temp.mp4"));
+        if let Err(e) = opened {
+            message_box(
+                &format!("The video editor did not open: {e}\n\nThe recording is kept at\n{}", raw.display()),
+                MB_ICONERROR,
+            );
+        }
+    } else if let Err(e) = move_into_place(raw, &quick_video_names(&app.config.videos_dir)) {
+        message_box(
+            &format!("The recording could not be saved as temp.mp4: {e}\n\nIt is kept at\n{}", raw.display()),
+            MB_ICONERROR,
+        );
     }
 }
 

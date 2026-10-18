@@ -39,14 +39,18 @@ There's also `Ctrl+Shift+Alt+E`, which just **opens your saved-screenshots folde
 1. Drag a region, exactly like a screenshot. Recording starts the moment you let go.
 2. A small bar sits next to the region — a pulsing dot, the elapsed time, and a stop square —
    with a thin red frame around what is being recorded. **Neither appears in the video.**
-3. Press `Ctrl+Alt+E` again, or click the bar. The editor opens on the recording:
+3. Press `Ctrl+Alt+E` again, or click the stop square. The editor opens on the recording:
    - **Trim** — drag the two gold handles on the timeline, or press `I` and `O` to set the start
      and end at the playhead. Playback stops at the end of the trim, so what plays is what saves.
    - **Crop** — drag the corners of the box over the picture; drag inside it to move it.
    - **Sound** — mute, or a volume slider from 0 to 200%.
-   - `Q` saves `videos/temp.mp4`, `E` keeps a timestamped copy in `videos/saved/`, `Esc` throws it
-     away. The saved video is also put on the clipboard as a file, so it pastes straight into a
-     chat or a folder.
+   - `Q` saves `videos/temp.mp4`, `E` keeps a timestamped copy in `videos/saved/`. The saved video
+     is also put on the clipboard as a file, so it pastes straight into a chat or a folder. If a
+     player still has `temp.mp4` open, `Q` saves `temp-2.mp4` beside it instead of failing.
+   - `Esc` (or Discard) sends the recording to the Recycle Bin. Closing the window keeps it.
+
+Until it is saved or discarded, each recording waits in `videos/raw/` under its own time-stamped
+name, so a second recording never overwrites one still being edited.
 
 It records whatever the PC is playing (turn that off in settings), at 30 fps by default. Frames
 come from the GPU through DXGI Desktop Duplication and are encoded to H.264 by the hardware
@@ -54,8 +58,8 @@ encoder when there is one — the screenshot path reads a 1080p region in 29 ms,
 up with 30 fps, so recording does not use it. No edits means the file is simply moved into
 place; any edit re-encodes it.
 
-Limits for now: one monitor per recording (a region is trimmed to the monitor its centre is
-on), no microphone, no pause.
+Limits for now: one monitor per recording (a region is trimmed to the monitor showing most of
+it), no microphone, no pause. System sound means the default playback device only.
 
 ## Focus mode — capture a window without drawing a box
 

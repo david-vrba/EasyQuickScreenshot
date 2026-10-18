@@ -42,6 +42,31 @@ pub fn timestamped_path(saved_dir: &Path) -> PathBuf {
     timestamped(saved_dir, "png")
 }
 
+/// Send a file to the Recycle Bin, where it can still be restored — the app never deletes
+/// a recording outright.
+pub fn recycle(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
+    };
+    // The shell takes a list of paths, each NUL-terminated, the list ended by one more NUL.
+    let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT).0 as u16,
+        ..Default::default()
+    };
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if code == 0 && !op.fAnyOperationsAborted.as_bool() {
+        Ok(())
+    } else {
+        Err(format!("the Recycle Bin refused {} (code {code})", path.display()))
+    }
+}
+
 /// `<dir>/2026-09-29_18-03-11.<ext>`, with `_2`, `_3`… when that second is already taken.
 pub fn timestamped(dir: &Path, ext: &str) -> PathBuf {
     let t = unsafe { GetLocalTime() };

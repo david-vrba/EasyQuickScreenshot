@@ -48,8 +48,18 @@ pub fn crop_arg(crop: Option<[i32; 4]>) -> String {
     }
 }
 
+/// Where a save landed, and what went wrong around it if the file itself is fine.
+#[derive(Serialize)]
+pub struct Saved {
+    pub path: String,
+    pub warning: Option<String>,
+}
+
+/// eqs exits 6 when the video saved but could not go on the clipboard.
+const SAVED_OFF_CLIPBOARD: i32 = 6;
+
 /// Save the recording with the editor's edits. `to` is "quick" (the temp file) or "keep"
-/// (a timestamped copy). Returns where it landed.
+/// (a timestamped copy).
 pub fn save(
     session: &Session,
     config: &std::path::Path,
@@ -58,7 +68,7 @@ pub fn save(
     end: f64,
     crop: Option<[i32; 4]>,
     volume: f64,
-) -> Result<String, String> {
+) -> Result<Saved, String> {
     if to != "quick" && to != "keep" {
         return Err(format!("unknown destination \"{to}\""));
     }
@@ -78,12 +88,32 @@ pub fn save(
         .output()
         .map_err(|e| format!("could not run {}: {e}", session.eqs.display()))?;
     let said = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut lines = said.lines().map(str::to_string);
     if output.status.success() {
-        Ok(said)
+        Ok(Saved { path: said, warning: None })
+    } else if output.status.code() == Some(SAVED_OFF_CLIPBOARD) {
+        Ok(Saved { path: lines.next().unwrap_or_default(), warning: lines.next() })
     } else if said.is_empty() {
         Err(format!("saving failed ({})", output.status))
     } else {
         Err(said)
+    }
+}
+
+/// Throw the recording away: eqs sends it to the Recycle Bin, so it can still be restored.
+pub fn discard(session: &Session, config: &std::path::Path) -> Result<(), String> {
+    let output = Command::new(&session.eqs)
+        .arg("--discard-video")
+        .arg(&session.video)
+        .arg("--config")
+        .arg(config)
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", session.eqs.display()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let said = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if said.is_empty() { format!("discarding failed ({})", output.status) } else { said })
     }
 }
 

@@ -13,7 +13,8 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT,
     MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+    MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+    eAVEncH264VProfile_High,
     MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MFSTARTUP_FULL, MF_VERSION,
 };
 
@@ -86,6 +87,8 @@ impl Mp4Writer {
 
         let video_out = video_type(&MFVideoFormat_H264, width, height, fps)?;
         video_out.SetUINT32(&MF_MT_AVG_BITRATE, video_bitrate(width, height, fps))?;
+        // High profile instead of the default Baseline: a sharper picture for the same bytes.
+        video_out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
         let video = writer.AddStream(&video_out)?;
         let video_in = video_type(&MFVideoFormat_RGB32, width, height, fps)?;
         // Positive stride means top-down rows, which is how the frames arrive. Left unset,

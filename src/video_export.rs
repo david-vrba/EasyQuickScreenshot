@@ -50,14 +50,22 @@ pub fn even_crop(crop: Rect, (w, h): (u32, u32)) -> Rect {
     (x, y, cw, ch)
 }
 
-/// Scale 16-bit samples by `gain`, clipping at full scale instead of wrapping around when
-/// it is turned up — wrapping turns a loud moment into a crack.
+/// Scale 16-bit samples by `gain`. Above `KNEE` of full scale the peaks are bent smoothly
+/// towards full scale instead of being cut flat: a cut peak is the crackle you hear when a
+/// recording is turned up.
 pub fn apply_gain(pcm: &mut [i16], gain: f32) {
+    const KNEE: f32 = 0.8;
     if (gain - 1.0).abs() < 0.005 {
         return;
     }
     for s in pcm.iter_mut() {
-        *s = (*s as f32 * gain).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let x = *s as f32 / 32768.0 * gain;
+        let bent = if x.abs() <= KNEE {
+            x
+        } else {
+            x.signum() * (KNEE + (1.0 - KNEE) * ((x.abs() - KNEE) / (1.0 - KNEE)).tanh())
+        };
+        *s = (bent * 32768.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
     }
 }
 
@@ -76,6 +84,12 @@ pub fn probe(input: &Path) -> Result<(f64, (u32, u32)), String> {
         let video = reader.GetCurrentMediaType(first_video()).map_err(|e| e.to_string())?;
         Ok((duration(&reader)?, frame_size(&video)?))
     }
+}
+
+/// True when saving with these edits would only reproduce the recording as it is.
+pub fn untouched(input: &Path, edits: Edits) -> Result<bool, String> {
+    let (length, size) = probe(input)?;
+    Ok(edits.changes_nothing(length, size))
 }
 
 pub fn export(input: &Path, output: &Path, edits: Edits) -> Result<(), String> {
@@ -257,12 +271,33 @@ unsafe fn crop_frame(sample: &IMFSample, stride: i32, size: (u32, u32), crop: Re
         let _ = image.Unlock2D();
         return Ok(());
     }
-    let mut base: *mut u8 = std::ptr::null_mut();
-    buffer.Lock(&mut base, None, None).map_err(|e| e.to_string())?;
-    let top = if stride < 0 { base.add((size.1 as usize - 1) * (-stride) as usize) } else { base };
-    copy_rows(top, stride, crop, row, out);
+    let (mut base, mut len): (*mut u8, u32) = (std::ptr::null_mut(), 0);
+    buffer.Lock(&mut base, None, Some(&mut len)).map_err(|e| e.to_string())?;
+    let pitch = row_pitch(len as usize, size);
+    if (len as usize) < (size.1 as usize - 1) * pitch + size.0 as usize * 4 {
+        let _ = buffer.Unlock();
+        return Err(format!("a decoded frame is {len} bytes, too small for {}x{}", size.0, size.1));
+    }
+    let pitch = if stride < 0 { -(pitch as i32) } else { pitch as i32 };
+    let top = if pitch < 0 { base.add((size.1 as usize - 1) * (-pitch) as usize) } else { base };
+    copy_rows(top, pitch, crop, row, out);
     let _ = buffer.Unlock();
     Ok(())
+}
+
+/// Bytes from one row to the next in a decoded frame. The decoder lays a frame out at its
+/// coded size, rounded up to whole 16-pixel blocks, while the media type reports the
+/// picture size: a 1278-wide clip arrives in 1280-wide rows. Read at the reported width,
+/// each row starts 2 pixels further off and the picture shears. The buffer's length says
+/// which layout it is.
+pub fn row_pitch(len: usize, (w, h): (u32, u32)) -> usize {
+    let tight = w as usize * 4;
+    let blocks = (h as usize + 15) & !15;
+    if len != tight * h as usize && len.is_multiple_of(blocks) && len / blocks >= tight {
+        len / blocks
+    } else {
+        tight
+    }
 }
 
 unsafe fn copy_rows(top: *const u8, pitch: i32, crop: Rect, row: usize, out: &mut [u8]) {
@@ -293,13 +328,25 @@ mod tests {
     }
 
     #[test]
-    fn turning_it_up_clips_instead_of_wrapping() {
-        let mut pcm = [1000i16, -1000, 30000, -30000];
+    fn turning_it_up_bends_the_peaks_instead_of_cutting_them() {
+        let mut pcm = [1000i16, -1000, 16000, 18000, -18000];
         apply_gain(&mut pcm, 2.0);
-        assert_eq!(pcm, [2000, -2000, i16::MAX, i16::MIN]);
+        assert_eq!(&pcm[..2], &[2000, -2000], "quiet samples are scaled exactly");
+        assert!(pcm[2] > 26214 && pcm[2] < pcm[3], "past the knee, still rising: {pcm:?}");
+        assert!(pcm[3] < i16::MAX, "a peak just past full scale is bent, not cut: {pcm:?}");
+        assert_eq!(pcm[4], -pcm[3], "both halves of the wave bend the same");
         let mut quiet = [1000i16, -999];
         apply_gain(&mut quiet, 0.5);
         assert_eq!(quiet, [500, -500]);
+    }
+
+    #[test]
+    fn rows_are_read_at_the_width_the_decoder_padded_to() {
+        // 1278x708 is coded as 1280x720: the layout that sheared real recordings.
+        assert_eq!(row_pitch(1280 * 720 * 4, (1278, 708)), 1280 * 4);
+        assert_eq!(row_pitch(656 * 368 * 4, (642, 358)), 656 * 4);
+        assert_eq!(row_pitch(1920 * 1088 * 4, (1920, 1080)), 1920 * 4, "only the height padded");
+        assert_eq!(row_pitch(1278 * 708 * 4, (1278, 708)), 1278 * 4, "an unpadded buffer");
     }
 
     #[test]

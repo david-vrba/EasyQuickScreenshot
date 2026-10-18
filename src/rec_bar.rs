@@ -8,7 +8,7 @@ use std::time::Instant;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, HGDIOBJ,
+    ScreenToClient, BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, HGDIOBJ,
     InvalidateRect,
     FillRect, GetMonitorInfoW, MonitorFromPoint, Rectangle, RoundRect, SelectObject, SetBkMode,
     SetTextColor, TextOutW, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, FF_DONTCARE,
@@ -18,7 +18,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowLongPtrW, IDC_ARROW,
     LoadCursorW, PostMessageW, RegisterClassW, SetCursor, SetLayeredWindowAttributes, SetTimer,
     SetWindowDisplayAffinity, SetWindowLongPtrW, ShowWindow, CREATESTRUCTW, GWLP_USERDATA,
     IDC_HAND, LWA_COLORKEY, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_ERASEBKGND,
@@ -137,7 +137,9 @@ unsafe fn monitor_of(region: Rect) -> (RECT, f32) {
     let _ = GetMonitorInfoW(monitor, &mut info);
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    (info.rcMonitor, dx as f32 / 96.0)
+    // The work area leaves out the taskbar: a bar placed over it hides behind the taskbar
+    // the moment that is clicked.
+    (info.rcWork, dx as f32 / 96.0)
 }
 
 unsafe fn register_classes() {
@@ -190,11 +192,18 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            SetCursor(LoadCursorW(None, IDC_HAND).unwrap_or_default());
+            let mut at = POINT::default();
+            let _ = GetCursorPos(&mut at);
+            let _ = ScreenToClient(hwnd, &mut at);
+            let cursor = if on_stop_button(at.x, at.y, (*state).scale) { IDC_HAND } else { IDC_ARROW };
+            SetCursor(LoadCursorW(None, cursor).unwrap_or_default());
             LRESULT(1)
         }
         WM_LBUTTONUP => {
-            let _ = PostMessageW((*state).notify, WM_EQS_STOP_RECORDING, WPARAM(0), LPARAM(0));
+            let (x, y) = (lparam.0 as i16 as i32, (lparam.0 >> 16) as i16 as i32);
+            if on_stop_button(x, y, (*state).scale) {
+                let _ = PostMessageW((*state).notify, WM_EQS_STOP_RECORDING, WPARAM(0), LPARAM(0));
+            }
             LRESULT(0)
         }
         WM_NCDESTROY => {
@@ -204,6 +213,14 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// The stop square plus a finger's margin, in the bar's own pixels. Only this stops the
+/// recording, so a click that just misses the window underneath does not end it.
+fn on_stop_button(x: i32, y: i32, scale: f32) -> bool {
+    let s = |v: f32| (v * scale) as i32;
+    let w = s(170.0);
+    (w - s(42.0)..=w - s(12.0)).contains(&x) && (s(4.0)..=s(34.0)).contains(&y)
 }
 
 unsafe fn paint_bar(hwnd: HWND, state: &BarState) {

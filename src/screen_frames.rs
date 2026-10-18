@@ -33,47 +33,62 @@ pub struct ScreenFrames {
 }
 
 /// The monitor a point is on, with its rectangle on the virtual desktop.
-fn output_at(x: i32, y: i32) -> windows::core::Result<Option<(IDXGIAdapter1, IDXGIOutput1, RECT)>> {
+/// The output showing most of `region`. Its centre point is not enough: monitors of
+/// different heights side by side leave dead space, and a region that reaches into it can
+/// have its centre on no monitor at all.
+fn output_for(region: Rect) -> windows::core::Result<Option<(IDXGIAdapter1, IDXGIOutput1, RECT)>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+        let mut best = None;
+        let mut best_area = 0;
         let mut a = 0;
         while let Ok(adapter) = factory.EnumAdapters1(a) {
             let mut o = 0;
             while let Ok(output) = adapter.EnumOutputs(o) {
-                let desc = output.GetDesc()?;
-                let r = desc.DesktopCoordinates;
-                if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
-                    return Ok(Some((adapter, output.cast()?, r)));
+                let r = output.GetDesc()?.DesktopCoordinates;
+                let area = overlap(region, r);
+                if area > best_area {
+                    best_area = area;
+                    best = Some((adapter.clone(), output.cast()?, r));
                 }
                 o += 1;
             }
             a += 1;
         }
-        Ok(None)
+        Ok(best)
     }
+}
+
+/// How many pixels of `region` lie on `monitor`.
+fn overlap(region: Rect, monitor: RECT) -> i64 {
+    let w = (region.0 + region.2).min(monitor.right) - region.0.max(monitor.left);
+    let h = (region.1 + region.3).min(monitor.bottom) - region.1.max(monitor.top);
+    w.max(0) as i64 * h.max(0) as i64
 }
 
 /// Trim a region to the monitor it is recorded on, and to even width and height: H.264
 /// stores colour at half resolution in both directions, so an odd size cannot be encoded.
+/// The encoders also refuse 32 px or less on a side, so the smallest is 34.
 pub fn fit_to_monitor(region: Rect, monitor: RECT) -> Option<Rect> {
     let x0 = region.0.max(monitor.left);
     let y0 = region.1.max(monitor.top);
     let x1 = (region.0 + region.2).min(monitor.right);
     let y1 = (region.1 + region.3).min(monitor.bottom);
     let (w, h) = ((x1 - x0) & !1, (y1 - y0) & !1);
-    (w >= 16 && h >= 16).then_some((x0, y0, w, h))
+    (w >= MIN_SIDE && h >= MIN_SIDE).then_some((x0, y0, w, h))
 }
 
+const MIN_SIDE: i32 = 34;
+
 impl ScreenFrames {
-    /// Open duplication on the monitor holding the centre of `region` (virtual-desktop
+    /// Open duplication on the monitor showing most of `region` (virtual-desktop
     /// coordinates). The region is trimmed to that monitor: v1 records one monitor.
     pub fn open(region: Rect) -> Result<ScreenFrames, String> {
         unsafe { Self::open_inner(region) }.map_err(|e| format!("screen capture: {e}"))
     }
 
     unsafe fn open_inner(region: Rect) -> windows::core::Result<ScreenFrames> {
-        let (cx, cy) = (region.0 + region.2 / 2, region.1 + region.3 / 2);
-        let Some((adapter, output, monitor)) = output_at(cx, cy)? else {
+        let Some((adapter, output, monitor)) = output_for(region)? else {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_INVALIDARG,
                 "the region is not on any monitor",
@@ -248,5 +263,18 @@ mod tests {
     #[test]
     fn a_sliver_is_not_worth_recording() {
         assert_eq!(fit_to_monitor((0, 0, 10, 500), monitor(0, 0, 1920, 1080)), None);
+        assert_eq!(fit_to_monitor((0, 0, 32, 500), monitor(0, 0, 1920, 1080)), None, "the encoder refuses 32");
+        assert_eq!(fit_to_monitor((0, 0, 34, 34), monitor(0, 0, 1920, 1080)), Some((0, 0, 34, 34)));
+    }
+
+    #[test]
+    fn the_monitor_showing_most_of_the_region_wins() {
+        // The left monitor is shorter and sits lower: this region's centre is above it.
+        let left = monitor(-1920, 182, 0, 1262);
+        let main = monitor(0, 0, 2560, 1440);
+        let region = (-800, 0, 1000, 300);
+        assert_eq!(overlap(region, left), 800 * 118);
+        assert_eq!(overlap(region, main), 200 * 300);
+        assert_eq!(overlap(region, monitor(5000, 0, 6000, 100)), 0);
     }
 }

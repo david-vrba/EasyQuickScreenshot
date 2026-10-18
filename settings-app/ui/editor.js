@@ -1,6 +1,7 @@
 // The video editor: trim with two handles, crop with a box over the picture, mute and
-// volume, then Q saves over videos/temp.mp4 and E keeps a timestamped copy. The saving
-// itself runs in eqs.exe; this file only decides what to ask for.
+// volume, then Q saves over videos/temp.mp4 and E keeps a timestamped copy; Esc sends the
+// recording to the Recycle Bin. The saving itself runs in eqs.exe; this file only decides
+// what to ask for.
 
 (async function () {
   const invoke = window.__TAURI__.core.invoke;
@@ -120,12 +121,23 @@
       height: `${Math.max(0, height)}px`,
     });
 
-  function clampCrop([x, y, w, h]) {
+  // Moving keeps the box's size and stops it at the frame.
+  function clampMove([x, y, w, h]) {
     w = Math.max(MIN_CROP, Math.min(w, size[0]));
     h = Math.max(MIN_CROP, Math.min(h, size[1]));
     x = Math.max(0, Math.min(x, size[0] - w));
     y = Math.max(0, Math.min(y, size[1] - h));
     return [x, y, w, h];
+  }
+
+  // A corner pull moves only its own two edges, so each edge stops at the frame on its own;
+  // clamping the size and then the position would drag the opposite edge along.
+  function clampEdges([x, y, w, h]) {
+    const left = Math.max(0, x);
+    const top = Math.max(0, y);
+    const right = Math.min(size[0], x + w);
+    const bottom = Math.min(size[1], y + h);
+    return [left, top, Math.max(MIN_CROP, right - left), Math.max(MIN_CROP, bottom - top)];
   }
 
   // Dragging the box moves it; dragging a corner moves that corner while the opposite
@@ -164,7 +176,7 @@
           h = MIN_CROP;
         }
       }
-      edit.crop = clampCrop([x, y, w, h]);
+      edit.crop = corner === undefined ? clampMove([x, y, w, h]) : clampEdges([x, y, w, h]);
       render();
     };
     cropBox.addEventListener("pointermove", move);
@@ -180,7 +192,8 @@
     // The preview cannot play louder than the file; above 100% is applied when saving.
     video.volume = Math.min(1, edit.volume / 100);
     video.muted = edit.muted;
-    $("volume-label").textContent = edit.muted ? "muted" : `${edit.volume}%`;
+    // At 0% the saved video has no sound track at all, so say so.
+    $("volume-label").textContent = edit.muted || edit.volume === 0 ? "muted" : `${edit.volume}%`;
   }
   volume.addEventListener("input", () => {
     edit.volume = Number(volume.value);
@@ -241,15 +254,16 @@
     const [x, y, w, h] = edit.crop.map(Math.round);
     const whole = x === 0 && y === 0 && w === size[0] && h === size[1];
     try {
-      const path = await invoke("save_video", {
+      const saved = await invoke("save_video", {
         to,
         start: edit.start,
         end: edit.end,
         crop: whole ? null : [x, y, w, h],
         volume: edit.muted ? 0 : edit.volume / 100,
       });
-      status(`Saved — ${path}`, "ok");
-      setTimeout(() => invoke("close_editor"), 600);
+      // The file is saved either way; a warning stays up long enough to be read.
+      status(saved.warning ? `Saved — ${saved.path}, but ${saved.warning}` : `Saved — ${saved.path}`, saved.warning ? "err" : "ok");
+      setTimeout(() => invoke("close_editor"), saved.warning ? 5000 : 600);
     } catch (e) {
       status(String(e), "err");
       busy = false;
@@ -258,18 +272,31 @@
 
   $("save-quick").addEventListener("click", () => save("quick"));
   $("save-keep").addEventListener("click", () => save("keep"));
-  $("discard").addEventListener("click", () => invoke("close_editor"));
+  async function discard() {
+    if (busy) return; // a save is running; throwing the recording away now would race it
+    busy = true;
+    status("Moving the recording to the Recycle Bin…");
+    try {
+      await invoke("discard_video");
+    } catch (e) {
+      status(String(e), "err");
+      busy = false;
+    }
+  }
+  $("discard").addEventListener("click", discard);
 
   document.addEventListener("keydown", (e) => {
     if (busy || e.ctrlKey || e.altKey || e.metaKey) return;
     const key = e.key.toLowerCase();
-    // Arrow keys on the volume slider belong to the slider.
-    if (e.target.tagName === "INPUT" && key.startsWith("arrow")) return;
+    // Enter on a focused button presses that button, not Q. Arrow keys always step the
+    // video, even after a click on the volume slider: the slider used to take them and
+    // could reach 0%, which saves the video without sound.
+    if (e.target.tagName === "BUTTON" && key === "enter") return;
     const step = e.shiftKey ? 1 : 1 / 30;
     if (key === " ") togglePlay();
     else if (key === "q" || (key === "enter" && !e.shiftKey)) save("quick");
     else if (key === "e" || (key === "enter" && e.shiftKey)) save("keep");
-    else if (key === "escape") invoke("close_editor");
+    else if (key === "escape") discard();
     else if (key === "i") setStart(video.currentTime);
     else if (key === "o") setEnd(video.currentTime);
     else if (key === "arrowleft") video.currentTime = Math.max(0, video.currentTime - step);

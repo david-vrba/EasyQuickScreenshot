@@ -90,7 +90,7 @@ async fn save_video(
     end: f64,
     crop: Option<[i32; 4]>,
     volume: f64,
-) -> Result<String, String> {
+) -> Result<video_editor::Saved, String> {
     let Some(session) = session.as_ref() else {
         return Err("no recording is open".into());
     };
@@ -108,6 +108,27 @@ async fn save_video(
 #[tauri::command]
 fn close_editor(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Discard: the recording goes to the Recycle Bin and the editor closes. Closing the window
+/// with X instead keeps the recording in videos/raw.
+#[tauri::command]
+async fn discard_video(
+    app: tauri::AppHandle,
+    session: tauri::State<'_, Option<video_editor::Session>>,
+) -> Result<(), String> {
+    let Some(session) = session.as_ref() else {
+        return Err("no recording is open".into());
+    };
+    let (video, eqs) = (session.video.clone(), session.eqs.clone());
+    let config = config_io::resolve_config_path();
+    tauri::async_runtime::spawn_blocking(move || {
+        video_editor::discard(&video_editor::Session { video, eqs }, &config)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    app.exit(0);
+    Ok(())
 }
 
 fn main() {
@@ -143,6 +164,7 @@ fn main() {
             video_session,
             save_video,
             close_editor,
+            discard_video,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EasyQuickScreenshot Settings");

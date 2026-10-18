@@ -37,9 +37,20 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 - **Shipped:** `Ctrl+Alt+E` region recording from the GPU (DXGI Desktop Duplication), H.264 +
   AAC through Media Foundation, system sound, a REC bar and region frame that never reach the
   video, and an editor with trim, crop, mute and volume. `Q` / `E` save it like a screenshot.
-- **Next, in order of how often it would help:** microphone as a second switch (mixed in, or
-  its own track); a region that spans two monitors; pause and resume; GIF export for short
-  clips; the window picker (focus mode) as a way to choose what to record.
+- **Fixed in v0.11.1** (from a full audit of the recorder): edited saves no longer shear the
+  picture at widths that are not a multiple of 16; `Q` works while a player has `temp.mp4` open;
+  a second recording no longer overwrites one still in the editor; the arrow keys no longer
+  turn the volume down to "no sound"; Discard goes to the Recycle Bin; the REC bar stays off the
+  taskbar and only its square stops the recording.
+- **Next, in order of how often it would help:**
+  1. A size target for sharing ("fit under 10 MB"): pick the bitrate from the clip length.
+  2. Recording starts the moment the mouse is released — today setup takes 0.4–1 s, so the
+     first moment of the action is missing.
+  3. Sound that follows the playback device when it changes, and a "no sound" warning on the
+     REC bar.
+  4. A crash or power cut leaves a playable file (fragmented MP4).
+  5. Microphone as a second switch; pause and resume; GIF export; a countdown; a region that
+     spans two monitors; focus mode to pick the window to record.
 
 ## Considered (not committed — feedback wanted)
 - A full editor window: re-crop saved shots, resize handles, blur redaction
@@ -48,7 +59,7 @@ weighed against that. Suggestions welcome via [issues](../../issues).
 - Single-instance guard for the settings window
 
 ## Known limitations
-- A recording covers one monitor: a region crossing two is trimmed to the one its centre is on.
+- A recording covers one monitor: a region crossing two is trimmed to the one showing most of it.
   Rotated (portrait) monitors cannot be recorded yet
 - Can't capture UAC prompts or the lock screen (Windows forbids it) or some
   exclusive-fullscreen games — windowed/borderless games are fine

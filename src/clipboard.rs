@@ -2,7 +2,11 @@
 // plain text in and out for the annotate text tool.
 // Retries OpenClipboard briefly — another app may hold the clipboard lock.
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -25,7 +29,6 @@ unsafe fn open_with_retry(hwnd: HWND) -> bool {
     false
 }
 
-/// Put UTF-16 text on the clipboard (a trailing NUL is added here).
 /// Put a file on the clipboard the way Explorer does, so pasting into a chat, an email or
 /// a folder attaches the file itself. Used for videos, which have no image form to paste.
 pub fn copy_file(path: &std::path::Path) -> Result<(), String> {
@@ -49,8 +52,27 @@ pub fn copy_file(path: &std::path::Path) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, ptr.add(HEADER), list.len() * 2);
         let _ = GlobalUnlock(hglobal);
 
-        if !open_with_retry(HWND::default()) {
+        // The clipboard needs an owner window: opened with none, EmptyClipboard leaves it
+        // ownerless and SetClipboardData then fails — after the old contents are gone. The
+        // export runs windowless, so it borrows an invisible message-only one for this.
+        let owner = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            PCWSTR::null(),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            None,
+            None,
+            None,
+        )
+        .unwrap_or_default();
+        if !open_with_retry(owner) {
             let _ = GlobalFree(hglobal);
+            let _ = DestroyWindow(owner);
             return Err("clipboard is locked by another application".into());
         }
         let result = EmptyClipboard()
@@ -61,10 +83,14 @@ pub fn copy_file(path: &std::path::Path) -> Result<(), String> {
         if result.is_err() {
             let _ = GlobalFree(hglobal);
         }
+        // The data stays on the clipboard after its owner is gone; only delayed rendering
+        // would need the window to live on.
+        let _ = DestroyWindow(owner);
         result
     }
 }
 
+/// Put UTF-16 text on the clipboard (a trailing NUL is added here).
 pub fn copy_text(hwnd: HWND, text: &[u16]) -> Result<(), String> {
     let bytes = (text.len() + 1) * 2;
     unsafe {

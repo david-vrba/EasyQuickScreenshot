@@ -23,6 +23,24 @@ use crate::mp4_writer::{Mp4Writer, AUDIO_CHANNELS, TICKS_PER_SECOND};
 use crate::screen_frames::ScreenFrames;
 use crate::system_audio::{self, Chunk, Timeline};
 
+/// Windows wakes sleeping threads every 15.6 ms by default, so a frame due now was grabbed
+/// up to 17 ms late and motion judders. 1 ms timer resolution for as long as this lives —
+/// the length of a recording — brings that to about 5 ms.
+struct FineTimer;
+
+impl FineTimer {
+    fn start() -> FineTimer {
+        unsafe { windows::Win32::Media::timeBeginPeriod(1) };
+        FineTimer
+    }
+}
+
+impl Drop for FineTimer {
+    fn drop(&mut self) {
+        unsafe { windows::Win32::Media::timeEndPeriod(1) };
+    }
+}
+
 pub struct Settings {
     pub fps: u32,
     pub system_sound: bool,
@@ -81,6 +99,7 @@ fn record(
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
+    let _fine_timer = FineTimer::start();
     let setup = ScreenFrames::open(region).and_then(|frames| {
         let writer = Mp4Writer::create(path, frames.width(), frames.height(), settings.fps, settings.system_sound)?;
         let canvas = Canvas::new(frames.width() as i32, frames.height() as i32)?;

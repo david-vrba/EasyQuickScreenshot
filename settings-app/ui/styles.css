@@ -267,10 +267,11 @@ body.editing .editor { display: flex; }
   border: 2px solid #1a1710;
   border-radius: 3px;
 }
-.grip[data-corner="0"] { left: -7px; top: -7px; cursor: nwse-resize; }
-.grip[data-corner="1"] { right: -7px; top: -7px; cursor: nesw-resize; }
-.grip[data-corner="2"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
-.grip[data-corner="3"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+/* Inside the box: at full frame the box is the whole stage, which clips what sticks out. */
+.grip[data-corner="0"] { left: -1px; top: -1px; cursor: nwse-resize; }
+.grip[data-corner="1"] { right: -1px; top: -1px; cursor: nesw-resize; }
+.grip[data-corner="2"] { right: -1px; bottom: -1px; cursor: nwse-resize; }
+.grip[data-corner="3"] { left: -1px; bottom: -1px; cursor: nesw-resize; }
 
 .timeline { position: relative; height: 34px; margin: 0 6px; }
 .track {
