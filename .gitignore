@@ -28,6 +28,8 @@ settings-app/gen
 
 # Private launch/marketing working notes — never publish these to the public repo.
 /promo/
+# Build plans: private notes about the owner's machine and words.
+/plan/
 
 # Secrets & credentials — must NEVER be committed (none exist today; this is a safety net)
 .env

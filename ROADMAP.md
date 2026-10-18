@@ -31,7 +31,6 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   not a version bump. The settings app is already on 0.62. Dependabot is told to stop
   offering the major until this is done by hand.
 - **winget** package (Scoop is live; the winget PR needs re-filing)
-- Annotate: clicking into text to place the caret, and a text size control of its own
 
 ## Screen recording — shipped in v0.11.0, what comes after
 - **Shipped:** `Ctrl+Alt+E` region recording from the GPU (DXGI Desktop Duplication), H.264 +
@@ -42,15 +41,17 @@ weighed against that. Suggestions welcome via [issues](../../issues).
   a second recording no longer overwrites one still in the editor; the arrow keys no longer
   turn the volume down to "no sound"; Discard goes to the Recycle Bin; the REC bar stays off the
   taskbar and only its square stops the recording.
-- **Next, in order of how often it would help:**
-  1. A size target for sharing ("fit under 10 MB"): pick the bitrate from the clip length.
-  2. Recording starts the moment the mouse is released — today setup takes 0.4–1 s, so the
-     first moment of the action is missing.
-  3. Sound that follows the playback device when it changes, and a "no sound" warning on the
-     REC bar.
-  4. A crash or power cut leaves a playable file (fragmented MP4).
-  5. Microphone as a second switch; pause and resume; GIF export; a countdown; a region that
-     spans two monitors; focus mode to pick the window to record.
+- **Next (v0.12):** recording starts the moment the mouse is released (today setup takes
+  0.4–1 s, so the first moment is missing); sound that follows the playback device and a "no
+  sound" warning on the REC bar; a crash or power cut leaves a playable file; an optional
+  3-2-1 countdown.
+- **Then (v0.14):** microphone, pause and resume, GIF export. Not planned yet: a region that
+  spans two monitors, focus mode to pick the window to record.
+
+## Screenshot editor — next (v0.13)
+- Rounded corners for rectangles (press `R` again), blur / pixelate (`B`), step numbers (`N`),
+  a text size control and click-to-place caret, JPG output and Save As (`Ctrl+S`), pin a capture
+  on top of every window (`K`), copy the text in a capture (`O`, Windows' own OCR).
 
 ## Considered (not committed — feedback wanted)
 - A full editor window: re-crop saved shots, resize handles, blur redaction
